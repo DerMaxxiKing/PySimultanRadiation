@@ -1,0 +1,10 @@
+- !Template
+  template_name: Building
+  template_id: '102'
+  inherits_from:
+  content: [Zones, Usage, Constructions]
+  documentation: ''
+  units: {}
+  types: {}
+  slots: {Zones: Liste_00, Aufbauzuweisungen: Liste_01, TGA: Liste_03, Nutzung: Liste_04}
+  synonyms: {}
