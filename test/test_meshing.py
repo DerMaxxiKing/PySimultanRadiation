@@ -48,15 +48,34 @@ def run_example():
                      faces=geo_model.faces,
                      volumes=geo_model.volumes)
 
-    # print(my_scene.mesh)
+    my_scene.create_topology()
+
+    surf_mesh_10 = my_scene.faces[10].mesh
+    print(surf_mesh_10)
+
+    scene_surface_mesh = my_scene.surface_mesh
+    print(scene_surface_mesh)
+    scene_surface_mesh.write('scene_test.vtk')
 
     for volume in my_scene.volumes:
-        print(volume.mesh)
+        surf_mesh = volume.surface_mesh
+        print(surf_mesh)
+        if surf_mesh is not None:
+            surf_mesh.write('test_surf.vtk')
+
+    for volume in my_scene.volumes:
+        vol_mesh = volume.mesh
+        print(vol_mesh)
+        if vol_mesh is not None:
+            vol_mesh.write('test_vol.vtk')
+
+    surf_mesh_5 = my_scene.volumes[5].surface_mesh
+    print(surf_mesh_5)
 
     print(my_scene.windows)
 
     scene_mesh = my_scene.mesh
-    my_scene.export_mesh('test.vtk')
+    my_scene.export_surf_mesh('test.vtk')
 
     # for face in my_scene.faces:
     #     filename = "F:\\OneDrive\\PythonProjects\\SmartCampusRadiation\\test\\output\\" + face.name + '.vtk'

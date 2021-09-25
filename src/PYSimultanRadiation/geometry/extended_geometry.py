@@ -1,15 +1,10 @@
 from PySimultan.geo_default_types import geometry_types
-from .utils import mesh_planar_face, generate_mesh
+from .utils import mesh_planar_face, generate_mesh, generate_surface_mesh
 from trimesh import Trimesh
 import logging
 import numpy as np
-import pygmsh
-import meshio
-import gmsh
 from itertools import count
-from random import randint
-
-from pygmsh.helpers import extract_to_meshio
+from copy import copy
 
 logger = logging.getLogger('PySimultanRadiation')
 
@@ -74,11 +69,16 @@ class ExtendedFace(geometry_types.face):
         self._mesh_size = None
         self._vertices = None
 
-        self.mesh_size = kwargs.get('mesh_size', randint(1, 6))
-        self.is_hull_face = kwargs.get('is_hull_face', True)
+        self.mesh_size = kwargs.get('mesh_size', 100)
+        self.hull_face = kwargs.get('hull_face', True)
+        self.internal_face = kwargs.get('internal_face', False)
 
-        self.side1 = kwargs.get('side1_volume', None)
-        self.side2 = kwargs.get('side2_volume', None)
+        self.side1 = kwargs.get('side1', None)
+        self.side2 = kwargs.get('side2', None)
+
+    @property
+    def normal(self):
+        return np.array([self._wrapped_obj.Normal.X, self._wrapped_obj.Normal.Y, self._wrapped_obj.Normal.Z])
 
     @property
     def vertices(self):
@@ -113,7 +113,35 @@ class ExtendedFace(geometry_types.face):
         self._mesh = value
 
     def create_mesh(self):
-        return mesh_planar_face(self, mesh_size=self.mesh_size)
+
+        try:
+
+            faces = [self]
+            edge_loops = []
+            [(edge_loops.append(x.boundary), edge_loops.extend(x.holes)) for x in faces]
+            edge_loops = set(edge_loops)
+            edges = []
+            [edges.extend(x.edges) for x in edge_loops]
+            edges = set(edges)
+            vertices = []
+            [vertices.extend([x.vertices[0], x.vertices[1]]) for x in edges]
+            vertices = set(vertices)
+
+            mesh = generate_mesh(vertices=vertices,
+                                 edges=edges,
+                                 edge_loops=edge_loops,
+                                 faces=faces,
+                                 volumes=[],
+                                 model_name=str(self.id),
+                                 lc=self.mesh_size,
+                                 dim=2)
+        except Exception as e:
+            logger.error(f'{self.name}; {self.id}: Error while creating mesh:\n{e}')
+            return
+
+        return mesh
+
+        # return mesh_planar_face(self, mesh_size=self.mesh_size)
 
     def export_vtk(self, file_name):
         self.mesh.write(file_name)
@@ -147,137 +175,105 @@ class ExtendedVolume(geometry_types.volume):
     newid = count(start=1, step=1).__next__
 
     def __init__(self, *args, **kwargs):
+
+        self.mesh_size = kwargs.get('mesh_size', 1)
+        self.mesh_min_size = kwargs.get('mesh_min_size', 0.1)
+        self.mesh_max_size = kwargs.get('mesh_max_size', 10)
+
+        self.surface_mesh_method = kwargs.get('surface_mesh_method', 'robust')
+
         geometry_types.volume.__init__(self, *args, **kwargs)
         self._mesh = None
+        self._surface_mesh = None
+        self._surface_trimesh = None
         self.gmsh_id = ExtendedVolume.newid()
+
+    @property
+    def surface_trimesh(self):
+        if self._surface_trimesh is None:
+            self._surface_trimesh = Trimesh(vertices=self.surface_mesh.points, faces=self.surface_mesh.cells[1].data)
+        return self._surface_trimesh
+
+    @property
+    def is_watertight(self):
+        return self.surface_trimesh.is_watertight
 
     @property
     def mesh(self):
         if self._mesh is None:
-            self.mesh = self.create_mesh()
+            self.mesh = self.create_mesh(dim=3)
         return self._mesh
+
+    @property
+    def surface_mesh(self):
+        if self._surface_mesh is None:
+            self._surface_mesh = self.create_surface_mesh()
+        return self._surface_mesh
 
     @mesh.setter
     def mesh(self, value):
         self._mesh = value
 
-    def create_mesh(self, method='gmsh'):
+    def create_surface_mesh(self):
 
-        # examples found:
-        # https://programtalk.com/vs2/python/9379/pygmsh/pygmsh/geometry.py/
+        faces = copy(self.faces)
+        edge_loops = []
+        [(edge_loops.append(x.boundary), edge_loops.extend(x.holes)) for x in faces]
+        edge_loops = set(edge_loops)
+        edges = []
+        [edges.extend(x.edges) for x in edge_loops]
+        edges = set(edges)
+        vertices = []
+        [vertices.extend([x.vertices[0], x.vertices[1]]) for x in edges]
+        vertices = set(vertices)
 
-        if (self.faces is None) or (self.faces.__len__() == 0):
-            logger.error(f'{self.name}; {self.id}: Scene has no faces')
+        try:
+            mesh = generate_surface_mesh(vertices=vertices,
+                                         edges=edges,
+                                         edge_loops=edge_loops,
+                                         faces=faces,
+                                         model_name=str(self.id),
+                                         lc=self.mesh_size,
+                                         min_size=self.mesh_min_size,
+                                         max_size=self.mesh_max_size,
+                                         method=self.surface_mesh_method)
+        except Exception as e:
+            logger.error(f'{self.name}; {self.id}: Error while creating surface mesh:\n{e}')
             return
 
-        # old version; did not work because returned cell_sets were wrong!
-        mesh = None
-
-        if method == 'from_model':
-
-            try:
-
-                logger.debug(f'Creating mesh for {self.name}: {self.id} with method: {method}')
-                with pygmsh.geo.Geometry() as geom:
-                    model = geom.__enter__()
-
-                    polys = {}
-
-                    for face in self.faces:
-                        holes = []
-                        if face.holes.__len__() > 0:
-                            holes = [geom.add_polygon(x.points,
-                                                      holes=None,
-                                                      mesh_size=face.mesh_size,
-                                                      ) for x in face.holes]
-
-                        poly = geom.add_polygon(
-                            face.points,
-                            holes=holes,
-                            mesh_size=face.mesh_size,
-                        )
-                        polys[str(face.id)] = poly
-
-                        if face.holes.__len__() > 0:
-                            [geom.remove(x) for x in holes]
-
-                    [model.add_physical(value, key) for key, value in polys.items()]
-
-                    # mesh = geom.generate_mesh(dim=2, verbose=True)
-                    # mesh.write('volume_rest.vtk')
-                    model.synchronize()
-
-                    surf_loop = geom.add_surface_loop([x.curve_loop for x in polys.values()])
-
-                    model.synchronize()
-                    volume = geom.add_volume(surf_loop)
-                    # model.add_physical(volume, str(self.id))
-
-                    # model.synchronize()
-                    #
-                    # [geom.remove(x) for x in polys.values()]
-                    # n = gmsh.model.getDimension()
-                    # s = gmsh.model.getEntities(n)
-
-                    geom.save_geometry('test.geo_unrolled')
-
-                    mesh = geom.generate_mesh(dim=3, verbose=True)
-                    mesh = self.add_mesh_properties(mesh)
-            except Exception as e:
-                logger.error(f'Error while creating mesh for {self.name}: {self.id}: \n {e}')
-
-        elif method == 'from_faces':
-            logger.warning("Mesh creation with method 'from_faces' not recommended. Use of 'from_model' recommended.")
-            import trimesh
-
-            # assemble mesh from the mesh of all faces:
-
-            mesh = trimesh.Trimesh()
-            cell_sets = {}
-            cell_sets_dict = {}
-
-            for face in self.faces:
-                num_elem0 = mesh.faces.shape[0]
-                num_elem1 = mesh.faces.shape[0] + face.trimesh.faces.shape[0]
-                elem_ids = np.array(range(num_elem0, num_elem1))
-                cell_sets[str(face.id)] = [elem_ids]
-                cell_sets_dict[str(face.id)] = {'triangle': elem_ids}
-                mesh = trimesh.util.concatenate(mesh, face.trimesh)
-
-            cells = [
-                ("triangle", mesh.faces)
-            ]
-
-            # create meshio:
-            mesh = meshio.Mesh(points=mesh.vertices, cells=cells, cell_sets=cell_sets)
+        if mesh is not None:
             mesh = self.add_mesh_properties(mesh)
 
-            logger.info(f'Mesh creation for {self.name}: {self.id} successful')
+        return mesh
 
-        elif method == 'gmsh':
+    def create_mesh(self, dim=3):
 
-            try:
+        try:
 
-                faces = self.faces
-                edge_loops = []
-                [(edge_loops.append(x.boundary), edge_loops.extend(x.holes)) for x in faces]
-                edge_loops = set(edge_loops)
-                edges = []
-                [edges.extend(x.edges) for x in edge_loops]
-                edges = set(edges)
-                vertices = []
-                [vertices.extend([x.vertices[0], x.vertices[1]]) for x in edges]
-                vertices = set(vertices)
+            faces = copy(self.faces)
+            edge_loops = []
+            [(edge_loops.append(x.boundary), edge_loops.extend(x.holes)) for x in faces]
+            edge_loops = set(edge_loops)
+            edges = []
+            [edges.extend(x.edges) for x in edge_loops]
+            edges = set(edges)
+            vertices = []
+            [vertices.extend([x.vertices[0], x.vertices[1]]) for x in edges]
+            vertices = set(vertices)
 
-                mesh = generate_mesh(vertices,
-                                     edges,
-                                     edge_loops,
-                                     faces,
-                                     [self],
-                                     str(self.id),
-                                     5)
-            except Exception as e:
-                logger.error(f'{self.name}; {self.id}: Error while creating mesh:\n{e}')
+            mesh = generate_mesh(vertices=vertices,
+                                 edges=edges,
+                                 edge_loops=edge_loops,
+                                 faces=faces,
+                                 volumes=[self],
+                                 model_name=str(self.id),
+                                 lc=self.mesh_size,
+                                 min_size=self.mesh_min_size,
+                                 max_size=self.mesh_max_size,
+                                 dim=dim)
+        except Exception as e:
+            logger.error(f'{self.name}; {self.id}: Error while creating mesh:\n{e}')
+            return
 
         return mesh
 
@@ -290,3 +286,9 @@ class ExtendedVolume(geometry_types.volume):
     def add_to_gmsh_geo(self, geo):
         geo.addSurfaceLoop([x.gmsh_id for x in self.faces], self.gmsh_id)
         geo.addVolume([self.gmsh_id], self.gmsh_id)
+
+    def export_surf_mesh(self, file_name):
+        self.surface_mesh.write(file_name)
+
+    def add_mesh_properties(self, mesh):
+        return mesh

@@ -2,8 +2,11 @@ from uuid import uuid4
 import pygmsh
 import numpy as np
 import meshio
-from itertools import count
 from .. import logger
+from .utils import generate_mesh, generate_surface_mesh
+import trimesh
+from collections import Counter
+from copy import copy
 
 
 class Scene(object):
@@ -18,6 +21,12 @@ class Scene(object):
         """
 
         self._mesh = None
+        self._surface_mesh = None
+        self.mesh_size = kwargs.get('mesh_size', 1)
+        self.mesh_min_size = kwargs.get('mesh_min_size', 0.5)
+        self.mesh_max_size = kwargs.get('mesh_max_size', 10)
+
+        self.surface_mesh_method = kwargs.get('surface_mesh_method', 'robust')
 
         self.name = kwargs.get('name', None)
         self.id = kwargs.get('id', uuid4())
@@ -29,6 +38,8 @@ class Scene(object):
         self.volumes = kwargs.get('volumes', [])
 
         self._face_ids = None
+
+        self.topo_done = False
 
         logger.debug(f'Created new scene {self.name}; {self.id}')
 
@@ -57,124 +68,64 @@ class Scene(object):
     @property
     def mesh(self):
         if self._mesh is None:
-            self.mesh = self.create_mesh()
+            self.mesh = self.create_mesh(dim=3)
         return self._mesh
 
     @mesh.setter
     def mesh(self, value):
         self._mesh = value
 
-    def create_mesh(self, method='gmsh'):
+    @property
+    def surface_mesh(self):
+        if self._surface_mesh is None:
+            self.surface_mesh = self.create_surface_mesh()
+        return self._surface_mesh
 
-        if (self.faces is None) or (self.faces.__len__() == 0):
-            logger.error(f'{self.name}; {self.id}: Scene has no faces')
+    @surface_mesh.setter
+    def surface_mesh(self, value):
+        self._surface_mesh = value
+
+    def create_surface_mesh(self):
+
+        try:
+            mesh = generate_surface_mesh(vertices=self.vertices,
+                                         edges=self.edges,
+                                         edge_loops=self.edge_loops,
+                                         faces=self.faces,
+                                         model_name=str(self.id),
+                                         lc=self.mesh_size,
+                                         min_size=self.mesh_min_size,
+                                         max_size=self.mesh_max_size,
+                                         method=self.surface_mesh_method)
+
+        except Exception as e:
+            logger.error(f'{self.name}; {self.id}: Error while creating surface mesh:\n{e}')
             return
 
-        # old version; did not work because returned cell_sets were wrong!
-        mesh = None
-
-        if method == 'from_model':
-            logger.debug(f'Creating mesh for {self.name}: {self.id} with method: {method}')
-            with pygmsh.geo.Geometry() as geom:
-                model = geom.__enter__()
-
-                polys = {}
-
-                for face in self.faces:
-                    holes = []
-                    if face.holes.__len__() > 0:
-                        holes = [geom.add_polygon(x.points,
-                                                  holes=None,
-                                                  mesh_size=face.mesh_size,
-                                                  ) for x in face.holes]
-
-                    poly = geom.add_polygon(
-                        face.points,
-                        holes=holes,
-                        mesh_size=face.mesh_size,
-                    )
-                    polys[str(face.id)] = poly
-
-                    if face.holes.__len__() > 0:
-                        [geom.remove(x) for x in holes]
-
-                [model.add_physical(value, key) for key, value in polys.items()]
-
-                mesh = geom.generate_mesh(dim=2, verbose=True)
-                mesh = self.add_mesh_properties(mesh)
-
-        elif method == 'from_faces':
-            logger.warn("Mesh creation with method 'from_faces' not recommended. Use of 'from_model' recommended.")
-            import trimesh
-
-            # assemble mesh from the mesh of all faces:
-
-            mesh = trimesh.Trimesh()
-            cell_sets = {}
-            cell_sets_dict = {}
-
-            for face in self.faces:
-                num_elem0 = mesh.faces.shape[0]
-                num_elem1 = mesh.faces.shape[0] + face.trimesh.faces.shape[0]
-                elem_ids = np.array(range(num_elem0, num_elem1))
-                cell_sets[str(face.id)] = [elem_ids]
-                cell_sets_dict[str(face.id)] = {'triangle': elem_ids}
-                mesh = trimesh.util.concatenate(mesh, face.trimesh)
-
-            cells = [
-                ("triangle", mesh.faces)
-            ]
-
-            # create meshio:
-            mesh = meshio.Mesh(points=mesh.vertices, cells=cells, cell_sets=cell_sets)
+        if mesh is not None:
             mesh = self.add_mesh_properties(mesh)
 
-            logger.info(f'Mesh creation for {self.name}: {self.id} successful')
+        return mesh
 
-        elif method == 'gmsh':
-            import gmsh
+    def create_mesh(self, dim=3):
 
-            gmsh.initialize()
-            gmsh.model.add("t2")
+        try:
+            mesh = generate_mesh(vertices=self.vertices,
+                                 edges=self.edges,
+                                 edge_loops=self.edge_loops,
+                                 faces=self.faces,
+                                 volumes=self.volumes,
+                                 model_name=str(self.id),
+                                 lc=self.mesh_size,
+                                 min_size=self.mesh_min_size,
+                                 max_size=self.mesh_max_size,
+                                 dim=dim)
+        except Exception as e:
+            logger.error(f'{self.name}; {self.id}: Error while creating mesh:\n{e}')
+            return
 
-            import gmsh
-            # If sys.argv is passed to gmsh.initialize(), Gmsh will parse the command line
-            # in the same way as the standalone Gmsh app:
-            gmsh.initialize()
-            gmsh.model.add("t2")
-            # Copied from t1.py...
-            lc = 1
-            for vertex in self.vertices:
-                gmsh.model.geo.addPoint(vertex.position[0], vertex.position[1], vertex.position[2], lc, vertex.gmsh_id)
-
-            for edge in self.edges:
-                gmsh.model.geo.addLine(edge.vertices[0].gmsh_id, edge.vertices[1].gmsh_id, edge.gmsh_id)
-
-            for edge_loop in self.edge_loops:
-                try:
-                    ids = np.array([x.gmsh_id for x in edge_loop.edges]) * np.array(edge_loop.edge_orientations)
-                    gmsh.model.geo.addCurveLoop(ids, edge_loop.gmsh_id)
-                except Exception as e:
-                    logger.error(f'Error creating CurveLoop for {edge_loop.id}, {edge_loop.gmsh_id}:\n{e}')
-
-            for face in self.faces:
-                try:
-                    edge_loop_ids = [face.boundary.gmsh_id] + [x.gmsh_id for x in face.holes]
-                    gmsh.model.geo.addPlaneSurface(edge_loop_ids, face.gmsh_id)
-                except Exception as e:
-                    logger.error(f'Error creating CurveLoop for {face.name},{face.id}, {face.gmsh_id}:\n{e}')
-
-            for volume in self.volumes:
-                gmsh.model.geo.addSurfaceLoop([x.gmsh_id for x in volume.faces], volume.gmsh_id)
-                gmsh.model.geo.addVolume([volume.gmsh_id], volume.gmsh_id)
-
-            gmsh.model.geo.synchronize()
-            gmsh.model.mesh.generate(2)
-
-            #Exception: Unable to recover the edge 7120 (1/4) on curve 1454 (on surface 177)
-
-            print('done')
-
+        if mesh is not None:
+            mesh = self.add_mesh_properties(mesh)
 
         return mesh
 
@@ -203,10 +154,16 @@ class Scene(object):
         )
 
     def add_mesh_properties(self, mesh=None):
+
         if mesh is None:
             mesh = self.mesh
 
+        if not self.topo_done:
+            self.create_topology()
+
         materials_ids = {}
+        room_ids = {}
+        room_id = 0
         mat_id = 0
 
         # num_elem_types = mesh.cells.__len__()
@@ -216,29 +173,103 @@ class Scene(object):
 
         material_data = np.full(mesh.cells[0].__len__(), np.NaN, dtype=float)
         is_window = np.full(mesh.cells[0].__len__(), np.NaN, dtype=float)
+        side1_zone = np.full(mesh.cells[0].__len__(), np.NaN, dtype=float)
+        side2_zone = np.full(mesh.cells[0].__len__(), np.NaN, dtype=float)
+        hull_face = np.full(mesh.cells[0].__len__(), 1, dtype=float)
+        internal_face = np.full(mesh.cells[0].__len__(), 0, dtype=float)
 
         for key, value in mesh.cell_sets.items():
             face_id = np.argwhere(self.face_ids == int(key))[0, 0]
             face = self.faces[face_id]
+            cell_ids = value[tri_elem_type_index]
+
+            hull_face[cell_ids] = int(face.hull_face)
+            internal_face[cell_ids] = int(face.internal_face)
+
+            room1 = face.side1
+            if room1 is not None:
+                if room1 not in room_ids.keys():
+                    room_ids[room1] = room_id
+                    room_id += 1
+                side1_zone[cell_ids] = room_ids[room1]
+
+            room2 = face.side2
+            if room2 is not None:
+                if room2 not in room_ids.keys():
+                    room_ids[room2] = room_id
+                    room_id += 1
+                side2_zone[cell_ids] = room_ids[room2]
+
             construction = self.faces[face_id].construction
             if construction is None:
                 print(f'face without construction: {face.name}, {face.id}')
-                material_data[value[tri_elem_type_index]] = np.NaN
+                material_data[cell_ids] = np.NaN
             else:
                 if construction not in materials_ids.keys():
                     materials_ids[construction] = mat_id
                     mat_id += 1
-                material_data[value[tri_elem_type_index]] = materials_ids[construction]
-                is_window[value[tri_elem_type_index]] = int(construction.is_window)
+                material_data[cell_ids] = materials_ids[construction]
+                is_window[cell_ids] = int(not construction.is_window)
 
         mesh.cell_data['material'] = [material_data]
-        mesh.cell_data['is_window'] = [is_window]
+        mesh.cell_data['opaque'] = [is_window]
+        mesh.cell_data['hull_face'] = [hull_face]
+        mesh.cell_data['internal_face'] = [internal_face]
+        mesh.cell_data['side1_zone'] = [side1_zone]
+        mesh.cell_data['side2_zone'] = [side2_zone]
 
         return mesh
 
     def export_mesh(self, file_name):
+        if self.mesh is None:
+            logger.error(f'{self}: mesh is None')
+            return
         self.mesh.write(file_name)
+
+    def export_surf_mesh(self, file_name):
+        if self.surface_mesh is None:
+            logger.error(f'{self}: surface_mesh is None')
+            return
+        self.surface_mesh.write(file_name)
 
     def create_topology(self):
 
-        pass
+        faces = copy(self.faces)
+        [faces.extend(x.faces) for x in self.volumes]
+        occurrences = Counter(faces)
+
+        hull_faces = [k for (k, v) in occurrences.items() if v in [1, 2]]
+        inside_faces = [k for (k, v) in occurrences.items() if v == 3]
+        no_occurance = [k for (k, v) in occurrences.items() if v == 1]
+
+        # np.array([x.hull_face for x in self.faces])
+
+        for face in hull_faces:
+            face.hull_face = True
+
+        for face in inside_faces:
+            face.internal_face = True
+            face.hull_face = False
+
+        # np.array([x.hull_face for x in self.faces])
+
+        generate_surface_mesh(faces=no_occurance, method='robust').write('no_occurrence.vtk')
+
+        for volume in self.volumes:
+            if not volume.is_watertight:
+                logger.error(f'{self.name}, {self.id}: Volume is not watertight')
+
+            if not volume.is_watertight:
+                trimesh.repair.fix_winding(volume.surface_trimesh)
+
+            surface_normals = np.array([x.normal for x in volume.faces])
+            first_cell_ids = [volume.surface_mesh.cell_sets[str(x.id)][1][0] for x in volume.faces]
+            origins = volume.surface_trimesh.triangles_center[first_cell_ids, :]
+
+            inside = volume.surface_trimesh.contains(origins + 0.05 * surface_normals)
+
+            for i, face in enumerate(volume.faces):
+                if inside[i]:
+                    face.side2 = volume
+                else:
+                    face.side1 = volume
