@@ -1,11 +1,13 @@
 from PySimultan.geo_default_types import geometry_types
 from PySimultan.default_types import BuildInWindowConstruction
-from .utils import mesh_planar_face, generate_mesh, generate_surface_mesh
 from trimesh import Trimesh
 import logging
 import numpy as np
 from itertools import count
 from copy import copy
+
+from .utils import generate_mesh, generate_surface_mesh
+from ..config import config
 
 logger = logging.getLogger('PySimultanRadiation')
 
@@ -67,23 +69,25 @@ class FaceExt(object):
         self._mesh_size = None
         self._vertices = None
 
-        self.mesh_size = kwargs.get('mesh_size', 9999)
+        self.mesh_size = kwargs.get('mesh_size', config.default_mesh_size)
         self.hull_face = kwargs.get('hull_face', True)
         self.internal_face = kwargs.get('internal_face', True)
 
         self.side1 = kwargs.get('side1', None)
         self.side2 = kwargs.get('side2', None)
 
+        self.foi = kwargs.get('foi', True)      # face of interest
+
     @property
     def eps(self):
-        if self.construction is BuildInWindowConstruction:
+        if type(self.construction) is BuildInWindowConstruction:
             return self.construction.eps
         else:
             return 0
 
     @property
     def g_value(self):
-        if self.construction is BuildInWindowConstruction:
+        if type(self.construction) is BuildInWindowConstruction:
             return self.construction.gVergl
         else:
             return 0
@@ -117,7 +121,7 @@ class FaceExt(object):
     @property
     def mesh(self):
         if self._mesh is None:
-            self.mesh = mesh_planar_face(self, mesh_size=self.mesh_size)
+            self.mesh = self.create_mesh()
         return self._mesh
 
     @mesh.setter
@@ -126,11 +130,13 @@ class FaceExt(object):
 
     def create_mesh(self):
 
+        logger.info(f'Surface {self.name}; {self.id}: creating surface mesh...')
+
         try:
 
-            faces = [self]
-            edge_loops = []
-            [(edge_loops.append(x.boundary), edge_loops.extend(x.holes)) for x in faces]
+            # faces = [self]
+            edge_loops = [self.boundary, *self.holes]
+            # [(edge_loops.append(x.boundary), edge_loops.extend(x.holes)) for x in faces]
             edge_loops = set(edge_loops)
             edges = []
             [edges.extend(x.edges) for x in edge_loops]
@@ -139,17 +145,21 @@ class FaceExt(object):
             [vertices.extend([x.vertices[0], x.vertices[1]]) for x in edges]
             vertices = set(vertices)
 
-            mesh = generate_mesh(vertices=vertices,
-                                 edges=edges,
-                                 edge_loops=edge_loops,
-                                 faces=faces,
-                                 volumes=[],
-                                 model_name=str(self.id),
-                                 lc=self.mesh_size,
-                                 dim=2)
+            mesh = generate_surface_mesh(vertices=vertices,
+                                         edges=edges,
+                                         edge_loops=edge_loops,
+                                         faces=[self],
+                                         volumes=[],
+                                         model_name=str(self.id),
+                                         lc=self.mesh_size,
+                                         dim=2,
+                                         method='robust')
+
         except Exception as e:
             logger.error(f'{self.name}; {self.id}: Error while creating mesh:\n{e}')
             return
+
+        logger.info(f'Surface {self.name}; {self.id}: Surface mesh creation successful')
 
         return mesh
 
@@ -188,7 +198,7 @@ class VolumeExt(object):
 
     def __init__(self, *args, **kwargs):
 
-        self.mesh_size = kwargs.get('mesh_size', 1)
+        self.mesh_size = kwargs.get('mesh_size', config.default_mesh_size)
         self.mesh_min_size = kwargs.get('mesh_min_size', 0.1)
         self.mesh_max_size = kwargs.get('mesh_max_size', 10)
 

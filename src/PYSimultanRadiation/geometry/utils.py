@@ -5,6 +5,8 @@ import numpy as np
 import logging
 from pygmsh.helpers import extract_to_meshio
 import trimesh
+import vg
+from copy import copy
 
 import warnings
 warnings.filterwarnings("ignore")
@@ -52,6 +54,16 @@ def generate_mesh(*args, **kwargs):
     verbose = kwargs.get('verbose', False) # show gmsh-output
     mesh_size_from_faces = kwargs.get('mesh_size_from_faces', True)
     dim = kwargs.get('dim', 3)  # dimension of the mesh: 2:surface-mesh, 3:volume-mesh
+
+    logger.info((f'Generating mesh:\n'
+                 f'Number Vertices: {vertices.__len__()}\n'
+                 f'Number Edges: {edges.__len__()}\n'
+                 f'Number EdgeLoops: {edge_loops.__len__()}\n'
+                 f'Number faces: {faces.__len__()}\n'
+                 f'Number volumes: {volumes.__len__()}\n'
+                 f'dim: {dim}\n'
+                 f'....'
+                 ))
 
     gmsh.initialize([])
     gmsh.model.add(f'{model_name}')
@@ -147,6 +159,18 @@ def generate_mesh(*args, **kwargs):
 
     gmsh.finalize()
 
+    if dim == 2:
+        logger.info((f'Mesh generation successful:\n'
+                     f'Number Vertices: {mesh.points.shape[0]}\n'
+                     f"Number Triangles: {mesh.cells_dict['triangle'].shape[0]}\n"
+                     ))
+    elif dim == 3:
+        logger.info((f'Mesh generation successful:\n'
+                     f'Number Vertices: {mesh.points.shape[0]}\n'
+                     f"Number Triangles: {mesh.cells_dict['triangle'].shape[0]}\n"
+                     f"Number Tetra: {mesh.cells_dict['tetra'].shape[0]}\n"
+                     ))
+
     return mesh
 
 
@@ -164,6 +188,15 @@ def generate_surface_mesh(*args, **kwargs):
     mesh_size_from_faces = kwargs.get('mesh_size_from_faces', True)
     method = kwargs.get('method', '')
 
+    logger.info((f'Generating surface mesh:\n'
+                 f'Number Vertices: {vertices.__len__()}\n'
+                 f'Number Edges: {edges.__len__()}\n'
+                 f'Number EdgeLoops: {edge_loops.__len__()}\n'
+                 f'Number faces: {faces.__len__()}\n'
+                 f'Method: {method}\n'
+                 f'....'
+                 ))
+
     if method == 'robust':
         with pygmsh.geo.Geometry() as geom:
             model = geom.__enter__()
@@ -172,16 +205,23 @@ def generate_surface_mesh(*args, **kwargs):
 
             for face in faces:
                 holes = []
+
+                if mesh_size_from_faces:
+                    mesh_size = face.mesh_size
+                else:
+                    mesh_size = lc
+
                 if face.holes.__len__() > 0:
+
                     holes = [geom.add_polygon(x.points,
                                               holes=None,
-                                              mesh_size=face.mesh_size,
+                                              mesh_size=mesh_size,
                                               ) for x in face.holes]
 
                 poly = geom.add_polygon(
                     face.points,
                     holes=holes,
-                    mesh_size=face.mesh_size,
+                    mesh_size=mesh_size,
                 )
                 polys[str(face.id)] = poly
 
@@ -205,10 +245,15 @@ def generate_surface_mesh(*args, **kwargs):
                              verbose=verbose,           # show gmsh-output
                              mesh_size_from_faces=mesh_size_from_faces)
 
+    logger.info((f'Surface mesh generation successful:\n'
+                 f'Number Vertices: {mesh.points.shape[0]}\n'
+                 f"Number Triangles: {mesh.cells_dict['triangle'].shape[0]}\n"
+                 ))
+
     return mesh
 
 
-def generate_terrain(hull_mesh, terrain_height):
+def generate_terrain(hull_mesh, terrain_height, border_dist=150, mesh_size=50):
     from .base_geometry import Vertex, Edge, EdgeLoop, Face, Terrain
 
     surf_mesh = trimesh.Trimesh(vertices=hull_mesh.points,
@@ -223,14 +268,25 @@ def generate_terrain(hull_mesh, terrain_height):
 
     # create terrain face:
 
-    x_ext = surf_mesh.bounds[1, 0] - surf_mesh.bounds[0, 0]
-    y_ext = surf_mesh.bounds[1, 1] - surf_mesh.bounds[0, 1]
+    # x_ext = surf_mesh.bounds[1, 0] - surf_mesh.bounds[0, 0]
+    # y_ext = surf_mesh.bounds[1, 1] - surf_mesh.bounds[0, 1]
 
     # outer loop:
-    p0 = Vertex(position=np.array([surf_mesh.bounds[0, 0] - x_ext, surf_mesh.bounds[0, 1] - y_ext, terrain_height]))
-    p1 = Vertex(position=np.array([surf_mesh.bounds[1, 0] + x_ext, surf_mesh.bounds[0, 1] - y_ext, terrain_height]))
-    p2 = Vertex(position=np.array([surf_mesh.bounds[1, 0] + x_ext, surf_mesh.bounds[1, 1] + y_ext, terrain_height]))
-    p3 = Vertex(position=np.array([surf_mesh.bounds[0, 0] - x_ext, surf_mesh.bounds[1, 1] + y_ext, terrain_height]))
+    p0 = Vertex(position=np.array([surf_mesh.bounds[0, 0] - border_dist,
+                                   surf_mesh.bounds[0, 1] - border_dist,
+                                   terrain_height]))
+
+    p1 = Vertex(position=np.array([surf_mesh.bounds[1, 0] + border_dist,
+                                   surf_mesh.bounds[0, 1] - border_dist,
+                                   terrain_height]))
+
+    p2 = Vertex(position=np.array([surf_mesh.bounds[1, 0] + border_dist,
+                                   surf_mesh.bounds[1, 1] + border_dist,
+                                   terrain_height]))
+
+    p3 = Vertex(position=np.array([surf_mesh.bounds[0, 0] - border_dist,
+                                   surf_mesh.bounds[1, 1] + border_dist,
+                                   terrain_height]))
 
     e0 = Edge(vertices=[p0, p1])
     e1 = Edge(vertices=[p1, p2])
@@ -238,6 +294,12 @@ def generate_terrain(hull_mesh, terrain_height):
     e3 = Edge(vertices=[p3, p0])
 
     el0 = EdgeLoop(edges=[e0, e1, e2, e3], edge_orientations=[1] * 4)
+
+    # simplify path:
+    planar_path, to_3D = path.to_planar()
+    simple_path = planar_path.simplify()
+
+    path = simple_path.to_3D(to_3D)
 
     # holes
     points = [None] * path.vertices.shape[0]
@@ -250,15 +312,26 @@ def generate_terrain(hull_mesh, terrain_height):
 
     for line in path.entities:
         # create edges:
-        edges = [None] * (line.nodes.shape[0])
-        for i, node in enumerate(line.nodes):
-            edges[i] = Edge(vertices=[points[node[0]], points[node[1]]])
+        if not line.closed:
+            continue
+
+        more_simple_path = simplify_path(path.vertices, line.points)
+
+        # edges = [None] * (line.nodes.shape[0])
+        # for i, node in enumerate(line.nodes):
+        #    edges[i] = Edge(vertices=[points[node[0]], points[node[1]]])
+        edges = [None] * (more_simple_path.__len__())
+        for i in range(more_simple_path.__len__()-1):
+            edges[i] = Edge(vertices=[points[more_simple_path[i]], points[more_simple_path[i+1]]])
+
+        edges[i+1] = Edge(vertices=[points[more_simple_path[-1]], points[more_simple_path[0]]])
+
         all_edges.extend(edges)
         edge_loop = EdgeLoop(edges=edges, edge_orientations=[1] * edges.__len__())
         edge_loops.append(edge_loop)
         holes.append(edge_loop)
 
-    terrain_face = Face(name='Terrain', boundary=el0, holes=holes)
+    terrain_face = Face(name='Terrain', boundary=el0, holes=holes, mesh_size=mesh_size, foi=False)
 
     terrain = Terrain(vertices=[*points, p0, p1, p2, p3],
                       edges=all_edges,
@@ -266,3 +339,159 @@ def generate_terrain(hull_mesh, terrain_height):
                       faces=[terrain_face])
 
     return terrain
+
+
+def generate_sky(hull_mesh, terrain_height, border_dist=150):
+
+    from .base_geometry import Vertex, Edge, EdgeLoop, Face, Sky
+
+    surf_mesh = trimesh.Trimesh(vertices=hull_mesh.points,
+                                faces=hull_mesh.cells[1].data)
+
+    # outer loop:
+
+
+    """
+    z = border_dist:
+    
+    ^ y
+    |       
+    |   p3 -----------------p2
+    |   |                   |
+    |   |                   |
+    |   |                   |
+    |   p0 -----------------p1
+    |
+    -------------------------------> x
+    
+    
+    z = border_dist:
+    
+    ^ y
+    |       
+    |   p7 -----------------p6
+    |   |                   |
+    |   |                   |
+    |   |                   |
+    |   p4 -----------------p5
+    |
+    -------------------------------> x
+    
+    """
+    p0 = Vertex(position=np.array([surf_mesh.bounds[0, 0] - border_dist,
+                                   surf_mesh.bounds[0, 1] - border_dist,
+                                   terrain_height]))
+
+    p1 = Vertex(position=np.array([surf_mesh.bounds[1, 0] + border_dist,
+                                   surf_mesh.bounds[0, 1] - border_dist,
+                                   terrain_height]))
+
+    p2 = Vertex(position=np.array([surf_mesh.bounds[1, 0] + border_dist,
+                                   surf_mesh.bounds[1, 1] + border_dist,
+                                   terrain_height]))
+
+    p3 = Vertex(position=np.array([surf_mesh.bounds[0, 0] - border_dist,
+                                   surf_mesh.bounds[1, 1] + border_dist,
+                                   terrain_height]))
+
+    p4 = Vertex(position=np.array([surf_mesh.bounds[0, 0] - border_dist,
+                                   surf_mesh.bounds[0, 1] - border_dist,
+                                   surf_mesh.bounds[1, 2] + border_dist]))
+
+    p5 = Vertex(position=np.array([surf_mesh.bounds[1, 0] + border_dist,
+                                   surf_mesh.bounds[0, 1] - border_dist,
+                                   surf_mesh.bounds[1, 2] + border_dist]))
+
+    p6 = Vertex(position=np.array([surf_mesh.bounds[1, 0] + border_dist,
+                                   surf_mesh.bounds[1, 1] + border_dist,
+                                   surf_mesh.bounds[1, 2] + border_dist]))
+
+    p7 = Vertex(position=np.array([surf_mesh.bounds[0, 0] - border_dist,
+                                   surf_mesh.bounds[1, 1] + border_dist,
+                                   surf_mesh.bounds[1, 2] + border_dist]))
+
+    # face 1
+    f1e0 = Edge(vertices=[p0, p1])
+    f1e1 = Edge(vertices=[p1, p5])
+    f1e2 = Edge(vertices=[p5, p4])
+    f1e3 = Edge(vertices=[p4, p0])
+
+    f1el = EdgeLoop(edges=[f1e0, f1e1, f1e2, f1e3], edge_orientations=[1] * 4)
+    f1 = Face(name='Sky1', boundary=f1el, mesh_size=20, foi=False)
+
+    # face 2
+    f2e0 = Edge(vertices=[p1, p2])
+    f2e1 = Edge(vertices=[p2, p6])
+    f2e2 = Edge(vertices=[p6, p5])
+    # f2e3 = Edge(vertices=[p5, p1])
+
+    f2el = EdgeLoop(edges=[f2e0, f2e1, f2e2, f1e1], edge_orientations=[1, 1, 1, -1])
+    f2 = Face(name='Sky2', boundary=f2el, mesh_size=20, foi=False)
+
+    # face 3
+    f3e0 = Edge(vertices=[p2, p3])
+    f3e1 = Edge(vertices=[p3, p7])
+    f3e2 = Edge(vertices=[p7, p6])
+    # f3e3 = Edge(vertices=[p6, p2])
+
+    f3el = EdgeLoop(edges=[f3e0, f3e1, f3e2, f2e1], edge_orientations=[1, 1, 1, -1])
+    f3 = Face(name='Sky3', boundary=f3el, mesh_size=20, foi=False)
+
+    # face 4
+    f4e0 = Edge(vertices=[p3, p0])
+    f4e1 = Edge(vertices=[p0, p4])
+    f4e2 = Edge(vertices=[p4, p7])
+    # f4e3 = Edge(vertices=[p7, p3])
+
+    f4el = EdgeLoop(edges=[f4e0, f4e1, f4e2, f3e1], edge_orientations=[1, 1, 1, -1])
+    f4 = Face(name='Sky4', boundary=f4el, mesh_size=20, foi=False)
+
+    # face 5
+    # f5e0 = Edge(vertices=[p4, p5])
+    # f5e1 = Edge(vertices=[p0, p4])
+    # f5e2 = Edge(vertices=[p4, p7])
+    # f5e3 = Edge(vertices=[p7, p3])
+
+    f5el = EdgeLoop(edges=[f1e2, f2e2, f3e2, f4e2], edge_orientations=[-1, -1, -1, -1])
+    f5 = Face(name='Sky5', boundary=f5el, mesh_size=20, foi=False)
+
+    sky = Sky(vertices=[p0, p1, p2, p3, p4, p5, p6, p7],
+              edges=[f1e0, f1e1, f1e2, f1e3,
+                     f2e0, f2e1, f2e2,
+                     f3e0, f3e1, f3e2,
+                     f4e0, f4e1, f4e2,
+                     f5el],
+              edge_loops=[f1el, f2el, f3el, f4el],
+              faces=[f1, f2, f3, f4, f5])
+
+    return sky
+
+
+def simplify_path(vertices, points):
+
+    new_points = [points[0]]
+
+    loop_points = points[1:]
+
+    for i, point in enumerate(loop_points[0:-1]):
+
+        length = np.linalg.norm(vertices[new_points[-1], :] - vertices[point])
+
+        if length < 0.05:
+            print(f'skipping point {point}: length {length}')
+            continue
+
+        v1 = vertices[new_points[-1]] - vertices[point]
+        v2 = vertices[new_points[-1]] - vertices[loop_points[i+1]]
+
+        angle = vg.angle(v1 / np.linalg.norm(v1), v2 / np.linalg.norm(v2), assume_normalized=True)
+
+        if angle < 1:
+            print(f'skipping point {point}: angle {angle}')
+            continue
+
+        new_points.append(point)
+
+    new_points.append(points[0])
+
+    return new_points

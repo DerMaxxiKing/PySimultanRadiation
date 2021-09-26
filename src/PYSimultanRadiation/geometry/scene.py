@@ -1,7 +1,7 @@
 from uuid import uuid4
 import numpy as np
 from .. import logger
-from .utils import generate_mesh, generate_surface_mesh, generate_terrain
+from .utils import generate_mesh, generate_surface_mesh, generate_terrain, generate_sky
 import trimesh
 from collections import Counter
 from copy import copy
@@ -27,7 +27,7 @@ class Scene(object):
 
         self.surface_mesh_method = kwargs.get('surface_mesh_method', 'robust')
 
-        self.name = kwargs.get('name', None)
+        self.name = kwargs.get('name', 'Unnamed Scene')
         self.id = kwargs.get('id', uuid4())
 
         self.vertices = kwargs.get('vertices', [])
@@ -42,10 +42,13 @@ class Scene(object):
         self._face_ids = None
 
         self.topo_done = False
+        self.face_side_topo_done = False
 
         self.terrain_height = kwargs.get('terrain_height', 0)
         self._terrain = None
+        self._sky = None
         self.terrain = kwargs.get('terrain', None)
+        self.sky = kwargs.get('sky', None)
 
         logger.debug(f'Created new scene {self.name}; {self.id}')
 
@@ -53,11 +56,21 @@ class Scene(object):
     def terrain(self):
         if self._terrain is None:
             self.terrain = self.generate_terrain()
-        return self.terrain
+        return self._terrain
 
     @terrain.setter
     def terrain(self, value):
         self._terrain = value
+
+    @property
+    def sky(self):
+        if self._sky is None:
+            self.sky = self.generate_sky()
+        return self.sky
+
+    @sky.setter
+    def sky(self, value):
+        self._sky = value
 
     @property
     def hull_faces(self):
@@ -129,6 +142,8 @@ class Scene(object):
 
     def create_hull_surface_mesh(self):
 
+        logger.info(f'Scene: {self.name}; {self.id}: creating hull surface mesh...')
+
         try:
             mesh = generate_surface_mesh(vertices=self.vertices,
                                          edges=self.edges,
@@ -144,49 +159,89 @@ class Scene(object):
             logger.error(f'{self.name}; {self.id}: Error while creating hull surface mesh:\n{e}')
             return
 
+        logger.info(f'{self.name}; {self.id}: hull surface mesh creation successful')
+
         return mesh
 
-    def create_surface_mesh(self):
+    def create_surface_mesh(self, *args, **kwargs):
+
+        vertices = kwargs.get('faces', self.vertices)
+        edges = kwargs.get('edges', self.edges)
+        edge_loops = kwargs.get('edge_loops', self.edge_loops)
+        faces = kwargs.get('faces', self.faces)
+
+        add_mesh_properties = kwargs.get('add_mesh_properties', True)
+
+        mesh_size_from_faces = kwargs.get('mesh_size_from_faces', True)
+        method = kwargs.get('method', self.surface_mesh_method)
+        mesh_size = kwargs.get('mesh_size', self.mesh_size)
+        min_size = kwargs.get('min_size', self.mesh_min_size)
+        max_size = kwargs.get('max_size', self.mesh_max_size)
+
+        logger.info(f'Scene: {self.name}; {self.id}: creating surface mesh:')
 
         try:
-            mesh = generate_surface_mesh(vertices=self.vertices,
-                                         edges=self.edges,
-                                         edge_loops=self.edge_loops,
-                                         faces=self.faces,
+            mesh = generate_surface_mesh(vertices=vertices,
+                                         edges=edges,
+                                         edge_loops=edge_loops,
+                                         faces=faces,
                                          model_name=str(self.id),
-                                         lc=self.mesh_size,
-                                         min_size=self.mesh_min_size,
-                                         max_size=self.mesh_max_size,
-                                         method=self.surface_mesh_method)
+                                         lc=mesh_size,
+                                         min_size=min_size,
+                                         max_size=max_size,
+                                         method=method,
+                                         mesh_size_from_faces=mesh_size_from_faces)
 
         except Exception as e:
             logger.error(f'{self.name}; {self.id}: Error while creating surface mesh:\n{e}')
             return
 
-        if mesh is not None:
+        if (mesh is not None) and add_mesh_properties:
             mesh = self.add_mesh_properties(mesh)
+
+        logger.info(f'Scene: {self.name}; {self.id}: surface mesh creation successful')
 
         return mesh
 
-    def create_mesh(self, dim=3):
+    def create_mesh(self, *args, **kwargs):
+
+        dim = kwargs.get('dim', 3)
+
+        vertices = kwargs.get('faces', self.vertices)
+        edges = kwargs.get('edges', self.edges)
+        edge_loops = kwargs.get('edge_loops', self.edge_loops)
+        faces = kwargs.get('faces', self.faces)
+        volumes = kwargs.get('volumes', self.volumes)
+
+        add_mesh_properties = kwargs.get('add_mesh_properties', True)
+
+        mesh_size = kwargs.get('mesh_size', self.mesh_size)
+        min_size = kwargs.get('min_size', self.mesh_min_size)
+        max_size = kwargs.get('max_size', self.mesh_max_size)
+        mesh_size_from_faces = kwargs.get('mesh_size_from_faces', self.mesh_max_size)
+
+        logger.info(f'Scene: {self.name}; {self.id}: creating volume mesh:')
 
         try:
-            mesh = generate_mesh(vertices=self.vertices,
-                                 edges=self.edges,
-                                 edge_loops=self.edge_loops,
-                                 faces=self.faces,
-                                 volumes=self.volumes,
+            mesh = generate_mesh(vertices=vertices,
+                                 edges=edges,
+                                 edge_loops=edge_loops,
+                                 faces=faces,
+                                 volumes=volumes,
                                  model_name=str(self.id),
-                                 lc=self.mesh_size,
-                                 min_size=self.mesh_min_size,
-                                 max_size=self.mesh_max_size,
-                                 dim=dim)
+                                 lc=mesh_size,
+                                 min_size=min_size,
+                                 max_size=max_size,
+                                 dim=dim,
+                                 mesh_size_from_faces=mesh_size_from_faces)
         except Exception as e:
-            logger.error(f'{self.name}; {self.id}: Error while creating mesh:\n{e}')
+            logger.error(f'Scene {self.name}; {self.id}: Error while creating volume mesh:\n{e}')
             return
 
-        if mesh is not None:
+        if (mesh is not None) and add_mesh_properties:
             mesh = self.add_mesh_properties(mesh)
+
+        logger.info(f'Scene: {self.name}; {self.id}: volume mesh creation successful')
 
         return mesh
 
@@ -216,6 +271,8 @@ class Scene(object):
 
     def add_mesh_properties(self, mesh=None):
 
+        logger.info(f'Scene: {self.name}; {self.id}: adding properties to surface mesh...')
+
         if mesh is None:
             mesh = self.mesh
 
@@ -233,16 +290,22 @@ class Scene(object):
         mesh.cells = [mesh.cells[tri_elem_type_index]]
 
         material_data = np.full(mesh.cells[0].__len__(), np.NaN, dtype=float)
-        is_window = np.full(mesh.cells[0].__len__(), np.NaN, dtype=float)
+        opaque = np.full(mesh.cells[0].__len__(), np.NaN, dtype=float)
         side1_zone = np.full(mesh.cells[0].__len__(), np.NaN, dtype=float)
         side2_zone = np.full(mesh.cells[0].__len__(), np.NaN, dtype=float)
         hull_face = np.full(mesh.cells[0].__len__(), 1, dtype=float)
         internal_face = np.full(mesh.cells[0].__len__(), 0, dtype=float)
         g_value = np.full(mesh.cells[0].__len__(), 0, dtype=float)
         eps = np.full(mesh.cells[0].__len__(), 0, dtype=float)
+        foi = np.full(mesh.cells[0].__len__(), 0, dtype=float)
 
         for key, value in mesh.cell_sets.items():
-            face_id = np.argwhere(self.face_ids == int(key))[0, 0]
+            res = np.argwhere(self.face_ids == int(key))
+            if res:
+                face_id = res[0, 0]
+            else:
+                continue
+            # face_id = np.argwhere(self.face_ids == int(key))[0, 0]
             face = self.faces[face_id]
             cell_ids = value[tri_elem_type_index]
 
@@ -251,6 +314,8 @@ class Scene(object):
 
             hull_face[cell_ids] = int(face.hull_face)
             internal_face[cell_ids] = int(face.internal_face)
+
+            foi[cell_ids] = int(face.foi)
 
             room1 = face.side1
             if room1 is not None:
@@ -268,23 +333,44 @@ class Scene(object):
 
             construction = self.faces[face_id].construction
             if construction is None:
-                print(f'face without construction: {face.name}, {face.id}')
+                logger.warning(f'face without construction: {face.name}, ID: {face.id}')
                 material_data[cell_ids] = np.NaN
+                opaque[cell_ids] = 1
             else:
                 if construction not in materials_ids.keys():
                     materials_ids[construction] = mat_id
                     mat_id += 1
                 material_data[cell_ids] = materials_ids[construction]
-                is_window[cell_ids] = int(not construction.is_window)
+                opaque[cell_ids] = int(not construction.is_window)
+
+        # handle terrain and sky
+        if self._terrain is not None:
+            for face in self._terrain.faces:
+                if str(face.id) in mesh.cell_sets.keys():
+                    value = mesh.cell_sets[str(face.id)]
+                    cell_ids = value[tri_elem_type_index]
+                    hull_face[cell_ids] = 0
+                    internal_face[cell_ids] = 0
+                    opaque[cell_ids] = 1
+
+        if self._sky is not None:
+            for face in self._sky.faces:
+                if str(face.id) in mesh.cell_sets.keys():
+                    value = mesh.cell_sets[str(face.id)]
+                    cell_ids = value[tri_elem_type_index]
+                    hull_face[cell_ids] = 0
+                    internal_face[cell_ids] = 0
+                    opaque[cell_ids] = 1
 
         mesh.cell_data['material'] = [material_data]
-        mesh.cell_data['opaque'] = [is_window]
+        mesh.cell_data['opaque'] = [opaque]
         mesh.cell_data['hull_face'] = [hull_face]
         mesh.cell_data['internal_face'] = [internal_face]
         mesh.cell_data['side1_zone'] = [side1_zone]
         mesh.cell_data['side2_zone'] = [side2_zone]
         mesh.cell_data['g_value'] = [g_value]
         mesh.cell_data['eps'] = [eps]
+        mesh.cell_data['foi'] = [foi]
 
         return mesh
 
@@ -301,6 +387,8 @@ class Scene(object):
         self.surface_mesh.write(file_name)
 
     def create_topology(self):
+
+        logger.info(f'Scene: {self.name}; {self.id}: creating topology')
 
         faces = copy(self.faces)
         [faces.extend(x.faces) for x in self.volumes]
@@ -321,10 +409,14 @@ class Scene(object):
 
         self.topo_done = True
 
+        logger.info(f'Scene: {self.name}; {self.id}: Topology creation successful')
+
         # np.array([x.hull_face for x in self.faces])
         # generate_surface_mesh(faces=no_occurance, method='robust').write('no_occurrence.vtk')
 
     def generate_face_side_topology(self):
+
+        logger.info(f'Scene: {self.name}; {self.id}: creating face-side topology')
 
         for volume in self.volumes:
             if not volume.is_watertight:
@@ -345,6 +437,82 @@ class Scene(object):
                 else:
                     face.side1 = volume
 
-    def generate_terrain(self):
+        self.face_side_topo_done = True
 
-        return generate_terrain(self.hull_mesh, self.terrain_height)
+    def generate_terrain(self, mesh_size=999, mesh_size_from_faces=False):
+
+        logger.info(f'Scene: {self.name}; {self.id}: creating terrain...')
+
+        hull_mesh = generate_surface_mesh(vertices=self.vertices,
+                                          edges=self.edges,
+                                          edge_loops=self.edge_loops,
+                                          faces=self.hull_faces,
+                                          model_name=str(self.id),
+                                          lc=mesh_size,
+                                          min_size=self.mesh_min_size,
+                                          max_size=self.mesh_max_size,
+                                          method='robust',
+                                          mesh_size_from_faces=mesh_size_from_faces)
+
+        terrain = generate_terrain(hull_mesh, self.terrain_height, mesh_size=50)
+        logger.info(f'Scene: {self.name}; {self.id}: Terrain generation successful')
+
+        return terrain
+
+    def add_terrain(self):
+
+        logger.info(f'Scene: {self.name}; {self.id}: adding terrain...')
+
+        self.vertices.extend(self.terrain.vertices)
+        self.edges.extend(self.terrain.edges)
+        self.edge_loops.extend(self.terrain.edge_loops)
+        self.faces.extend(self.terrain.faces)
+
+        logger.info(f'Scene: {self.name}; {self.id}: terrain added successful')
+
+    def generate_sky(self):
+
+        logger.info(f'Scene: {self.name}; {self.id}: generating sky')
+
+        return generate_sky(self.hull_mesh, self.terrain_height)
+
+    def add_sky(self):
+
+        logger.info(f'Scene: {self.name}; {self.id}: adding sky')
+
+        self.vertices.extend(self.sky.vertices)
+        self.edges.extend(self.sky.edges)
+        self.edge_loops.extend(self.sky.edge_loops)
+        self.faces.extend(self.sky.faces)
+
+    def export_shading_analysis_mesh(self, file_name):
+
+        logger.info(f'Scene: {self.name}; {self.id}: exporting mesh for  mesh...')
+
+        if self._terrain is None:
+            _ = self.terrain
+
+        # generate surface mesh:
+        faces = {*self.faces, *self.terrain.faces}
+
+        edge_loops = set()
+        {(edge_loops.add(x.boundary), edge_loops.update(x.holes)) for x in faces}
+        edges = set()
+        [edges.update(x.edges) for x in edge_loops]
+        vertices = set()
+        [vertices.update([x.vertices[0], x.vertices[1]]) for x in edges]
+
+        mesh = self.create_surface_mesh(vertices=vertices,
+                                        edges=edges,
+                                        edge_loops=edge_loops,
+                                        faces=faces,
+                                        model_name=str(self.id),
+                                        mesh_size=9999,
+                                        min_size=99999,
+                                        max_size=99999,
+                                        method='robust',
+                                        mesh_size_from_faces=False,
+                                        add_mesh_properties=False)
+
+        mesh = self.add_mesh_properties(mesh)
+        mesh.write(file_name)

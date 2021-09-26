@@ -1,9 +1,19 @@
 from PySimultan import DataModel, Template, yaml
 from src.PYSimultanRadiation import TemplateParser
 from src.PYSimultanRadiation.geometry.scene import Scene
-from src.PYSimultanRadiation.geometry.utils import mesh_planar_face
-
 import os
+from src.PYSimultanRadiation.config import config
+
+import logging
+
+logger = logging.getLogger('PySimultanRadiation')
+logger.setLevel('INFO')
+
+logger2 = logging.getLogger('PySimultan')
+logger2.setLevel('INFO')
+
+
+config.default_mesh_size = 1
 
 
 def create_geometry_templates():
@@ -49,36 +59,45 @@ def run_example():
                      volumes=geo_model.volumes,
                      terrain_height=14.2)
 
-    terrain = my_scene.generate_terrain()
+    my_scene.export_shading_analysis_mesh('shading_analysis_mesh.vtk')
 
-    my_scene.create_topology()
+    my_scene.volumes[0].mesh
 
-    surf_mesh_10 = my_scene.faces[10].mesh
-    print(surf_mesh_10)
+    my_scene.add_terrain()
+    my_scene.terrain.export_vtk('terrain.vtk')
+
+    # terrain = my_scene.generate_terrain()
+    # terrain.mesh.write('terrain.vtk')
+
+    sky = my_scene.generate_sky()
+    sky.mesh.write('sky.vtk')
+
+    # my_scene.create_topology()
+
+    # surf_mesh_10 = my_scene.faces[10].mesh
 
     scene_surface_mesh = my_scene.surface_mesh
-    print(scene_surface_mesh)
-    scene_surface_mesh.write('scene_test.vtk')
+    scene_surface_mesh.write('scene.vtk')
 
-    for volume in my_scene.volumes:
-        surf_mesh = volume.surface_mesh
-        print(surf_mesh)
-        if surf_mesh is not None:
-            surf_mesh.write('test_surf.vtk')
-
-    for volume in my_scene.volumes:
-        vol_mesh = volume.mesh
-        print(vol_mesh)
-        if vol_mesh is not None:
-            vol_mesh.write('test_vol.vtk')
-
-    surf_mesh_5 = my_scene.volumes[5].surface_mesh
-    print(surf_mesh_5)
-
-    print(my_scene.windows)
-
-    scene_mesh = my_scene.mesh
-    my_scene.export_surf_mesh('test.vtk')
+    # for volume in my_scene.volumes:
+    #     surf_mesh = volume.surface_mesh
+    #     print(surf_mesh)
+    #     if surf_mesh is not None:
+    #         surf_mesh.write('test_surf.vtk')
+    #
+    # for volume in my_scene.volumes:
+    #     vol_mesh = volume.mesh
+    #     print(vol_mesh)
+    #     if vol_mesh is not None:
+    #         vol_mesh.write('test_vol.vtk')
+    #
+    # surf_mesh_5 = my_scene.volumes[5].surface_mesh
+    # print(surf_mesh_5)
+    #
+    # print(my_scene.windows)
+    #
+    # scene_mesh = my_scene.mesh
+    # my_scene.export_surf_mesh('test.vtk')
 
     # for face in my_scene.faces:
     #     filename = "F:\\OneDrive\\PythonProjects\\SmartCampusRadiation\\test\\output\\" + face.name + '.vtk'
