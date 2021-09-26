@@ -4,6 +4,7 @@ import gmsh
 import numpy as np
 import logging
 from pygmsh.helpers import extract_to_meshio
+import trimesh
 
 import warnings
 warnings.filterwarnings("ignore")
@@ -205,3 +206,63 @@ def generate_surface_mesh(*args, **kwargs):
                              mesh_size_from_faces=mesh_size_from_faces)
 
     return mesh
+
+
+def generate_terrain(hull_mesh, terrain_height):
+    from .base_geometry import Vertex, Edge, EdgeLoop, Face, Terrain
+
+    surf_mesh = trimesh.Trimesh(vertices=hull_mesh.points,
+                                faces=hull_mesh.cells[1].data)
+
+    surf_mesh.remove_unreferenced_vertices()
+    surf_mesh.merge_vertices()
+    surf_mesh.remove_duplicate_faces()
+    trimesh.repair.fix_winding(surf_mesh)
+
+    path = surf_mesh.section(np.array([0, 0, 1]), np.array([0, 0, terrain_height]))
+
+    # create terrain face:
+
+    x_ext = surf_mesh.bounds[1, 0] - surf_mesh.bounds[0, 0]
+    y_ext = surf_mesh.bounds[1, 1] - surf_mesh.bounds[0, 1]
+
+    # outer loop:
+    p0 = Vertex(position=np.array([surf_mesh.bounds[0, 0] - x_ext, surf_mesh.bounds[0, 1] - y_ext, terrain_height]))
+    p1 = Vertex(position=np.array([surf_mesh.bounds[1, 0] + x_ext, surf_mesh.bounds[0, 1] - y_ext, terrain_height]))
+    p2 = Vertex(position=np.array([surf_mesh.bounds[1, 0] + x_ext, surf_mesh.bounds[1, 1] + y_ext, terrain_height]))
+    p3 = Vertex(position=np.array([surf_mesh.bounds[0, 0] - x_ext, surf_mesh.bounds[1, 1] + y_ext, terrain_height]))
+
+    e0 = Edge(vertices=[p0, p1])
+    e1 = Edge(vertices=[p1, p2])
+    e2 = Edge(vertices=[p2, p3])
+    e3 = Edge(vertices=[p3, p0])
+
+    el0 = EdgeLoop(edges=[e0, e1, e2, e3], edge_orientations=[1] * 4)
+
+    # holes
+    points = [None] * path.vertices.shape[0]
+    for i, vertex in enumerate(path.vertices):
+        points[i] = Vertex(position=np.array(vertex))
+
+    holes = []
+    all_edges = [e0, e1, e2, e3]
+    edge_loops = [el0]
+
+    for line in path.entities:
+        # create edges:
+        edges = [None] * (line.nodes.shape[0])
+        for i, node in enumerate(line.nodes):
+            edges[i] = Edge(vertices=[points[node[0]], points[node[1]]])
+        all_edges.extend(edges)
+        edge_loop = EdgeLoop(edges=edges, edge_orientations=[1] * edges.__len__())
+        edge_loops.append(edge_loop)
+        holes.append(edge_loop)
+
+    terrain_face = Face(name='Terrain', boundary=el0, holes=holes)
+
+    terrain = Terrain(vertices=[*points, p0, p1, p2, p3],
+                      edges=all_edges,
+                      edge_loops=edge_loops,
+                      faces=[terrain_face])
+
+    return terrain

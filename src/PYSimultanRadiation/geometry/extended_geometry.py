@@ -1,4 +1,5 @@
 from PySimultan.geo_default_types import geometry_types
+from PySimultan.default_types import BuildInWindowConstruction
 from .utils import mesh_planar_face, generate_mesh, generate_surface_mesh
 from trimesh import Trimesh
 import logging
@@ -9,12 +10,11 @@ from copy import copy
 logger = logging.getLogger('PySimultanRadiation')
 
 
-class ExtendedVertex(geometry_types.vertex):
+class VertexExt(object):
 
     newid = count(start=1, step=1).__next__
 
     def __init__(self, *args, **kwargs):
-        geometry_types.vertex.__init__(self, *args, **kwargs)
         self.gmsh_id = ExtendedVertex.newid()
 
     def add_to_gmsh_geo(self, geo, mesh_size):
@@ -24,12 +24,11 @@ class ExtendedVertex(geometry_types.vertex):
             logger.error(f'Error creating point for {self.id}, {self.gmsh_id}:\n{e}')
 
 
-class ExtendedEdge(geometry_types.edge):
+class EdgeExt(object):
 
     newid = count(start=1, step=1).__next__
 
     def __init__(self, *args, **kwargs):
-        geometry_types.edge.__init__(self, *args, **kwargs)
         self.gmsh_id = ExtendedEdge.newid()
 
     def add_to_gmsh_geo(self, geo):
@@ -39,12 +38,11 @@ class ExtendedEdge(geometry_types.edge):
             logger.error(f'Error creating edge for {self.id}, {self.gmsh_id}:\n{e}')
 
 
-class ExtendedEdgeLoop(geometry_types.edge_loop):
+class EdgeLoopExt(object):
 
     newid = count(start=1, step=1).__next__
 
     def __init__(self, *args, **kwargs):
-        geometry_types.edge_loop.__init__(self, *args, **kwargs)
         self.gmsh_id = ExtendedEdgeLoop.newid()
 
     def add_to_gmsh_geo(self, geo):
@@ -55,7 +53,7 @@ class ExtendedEdgeLoop(geometry_types.edge_loop):
             logger.error(f'Error creating CurveLoop for {self.id}, {self.gmsh_id}:\n{e}')
 
 
-class ExtendedFace(geometry_types.face):
+class FaceExt(object):
 
     newid = count(start=1, step=1).__next__
 
@@ -69,12 +67,26 @@ class ExtendedFace(geometry_types.face):
         self._mesh_size = None
         self._vertices = None
 
-        self.mesh_size = kwargs.get('mesh_size', 100)
+        self.mesh_size = kwargs.get('mesh_size', 9999)
         self.hull_face = kwargs.get('hull_face', True)
-        self.internal_face = kwargs.get('internal_face', False)
+        self.internal_face = kwargs.get('internal_face', True)
 
         self.side1 = kwargs.get('side1', None)
         self.side2 = kwargs.get('side2', None)
+
+    @property
+    def eps(self):
+        if self.construction is BuildInWindowConstruction:
+            return self.construction.eps
+        else:
+            return 0
+
+    @property
+    def g_value(self):
+        if self.construction is BuildInWindowConstruction:
+            return self.construction.gVergl
+        else:
+            return 0
 
     @property
     def normal(self):
@@ -170,7 +182,7 @@ class ExtendedFace(geometry_types.face):
         return vertices
 
 
-class ExtendedVolume(geometry_types.volume):
+class VolumeExt(object):
 
     newid = count(start=1, step=1).__next__
 
@@ -182,7 +194,6 @@ class ExtendedVolume(geometry_types.volume):
 
         self.surface_mesh_method = kwargs.get('surface_mesh_method', 'robust')
 
-        geometry_types.volume.__init__(self, *args, **kwargs)
         self._mesh = None
         self._surface_mesh = None
         self._surface_trimesh = None
@@ -292,3 +303,41 @@ class ExtendedVolume(geometry_types.volume):
 
     def add_mesh_properties(self, mesh):
         return mesh
+
+
+# make extended classes for SimultanCls and PythonCls
+
+# for SIMULTAN
+class ExtendedVertex(VertexExt, geometry_types.vertex):
+
+    def __init__(self, *args, **kwargs):
+        geometry_types.vertex.__init__(self, *args, **kwargs)
+        VertexExt.__init__(self, *args, **kwargs)
+
+
+class ExtendedEdge(EdgeExt, geometry_types.edge):
+
+    def __init__(self, *args, **kwargs):
+        geometry_types.edge.__init__(self, *args, **kwargs)
+        EdgeExt.__init__(self, *args, **kwargs)
+
+
+class ExtendedEdgeLoop(EdgeLoopExt, geometry_types.edge_loop):
+
+    def __init__(self, *args, **kwargs):
+        geometry_types.edge_loop.__init__(self, *args, **kwargs)
+        EdgeLoopExt.__init__(self, *args, **kwargs)
+
+
+class ExtendedFace(FaceExt, geometry_types.face):
+
+    def __init__(self, *args, **kwargs):
+        geometry_types.face.__init__(self, *args, **kwargs)
+        FaceExt.__init__(self, *args, **kwargs)
+
+
+class ExtendedVolume(VolumeExt, geometry_types.volume):
+
+    def __init__(self, *args, **kwargs):
+        geometry_types.volume.__init__(self, *args, **kwargs)
+        VolumeExt.__init__(self, *args, **kwargs)

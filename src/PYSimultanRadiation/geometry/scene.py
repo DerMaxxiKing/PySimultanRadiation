@@ -1,9 +1,7 @@
 from uuid import uuid4
-import pygmsh
 import numpy as np
-import meshio
 from .. import logger
-from .utils import generate_mesh, generate_surface_mesh
+from .utils import generate_mesh, generate_surface_mesh, generate_terrain
 import trimesh
 from collections import Counter
 from copy import copy
@@ -21,6 +19,7 @@ class Scene(object):
         """
 
         self._mesh = None
+        self._hull_mesh = None
         self._surface_mesh = None
         self.mesh_size = kwargs.get('mesh_size', 1)
         self.mesh_min_size = kwargs.get('mesh_min_size', 0.5)
@@ -37,11 +36,54 @@ class Scene(object):
         self.faces = kwargs.get('faces', [])
         self.volumes = kwargs.get('volumes', [])
 
+        self._hull_faces = kwargs.get('_hull_faces', None)
+        self._internal_faces = kwargs.get('_internal_faces', None)
+
         self._face_ids = None
 
         self.topo_done = False
 
+        self.terrain_height = kwargs.get('terrain_height', 0)
+        self._terrain = None
+        self.terrain = kwargs.get('terrain', None)
+
         logger.debug(f'Created new scene {self.name}; {self.id}')
+
+    @property
+    def terrain(self):
+        if self._terrain is None:
+            self.terrain = self.generate_terrain()
+        return self.terrain
+
+    @terrain.setter
+    def terrain(self, value):
+        self._terrain = value
+
+    @property
+    def hull_faces(self):
+        if self._hull_faces is None:
+            if not self.topo_done:
+                self.create_topology()
+            self._hull_faces = [x for x in self.faces if x.hull_face]
+        return self._hull_faces
+
+    @property
+    def internal_faces(self):
+        if self._internal_faces is None:
+            if not self.topo_done:
+                self.create_topology()
+            self._internal_faces = [x for x in self.faces if x.internal_faces]
+        return self._internal_faces
+
+    @property
+    def hull_mesh(self):
+        if self._hull_mesh is None:
+            self.hull_mesh = self.create_hull_surface_mesh()
+        return self._hull_mesh
+
+    @hull_mesh.setter
+    def hull_mesh(self, value):
+        self._hull_mesh = value
 
     @property
     def face_ids(self):
@@ -84,6 +126,25 @@ class Scene(object):
     @surface_mesh.setter
     def surface_mesh(self, value):
         self._surface_mesh = value
+
+    def create_hull_surface_mesh(self):
+
+        try:
+            mesh = generate_surface_mesh(vertices=self.vertices,
+                                         edges=self.edges,
+                                         edge_loops=self.edge_loops,
+                                         faces=self.hull_faces,
+                                         model_name=str(self.id),
+                                         lc=self.mesh_size,
+                                         min_size=self.mesh_min_size,
+                                         max_size=self.mesh_max_size,
+                                         method=self.surface_mesh_method)
+
+        except Exception as e:
+            logger.error(f'{self.name}; {self.id}: Error while creating hull surface mesh:\n{e}')
+            return
+
+        return mesh
 
     def create_surface_mesh(self):
 
@@ -177,11 +238,16 @@ class Scene(object):
         side2_zone = np.full(mesh.cells[0].__len__(), np.NaN, dtype=float)
         hull_face = np.full(mesh.cells[0].__len__(), 1, dtype=float)
         internal_face = np.full(mesh.cells[0].__len__(), 0, dtype=float)
+        g_value = np.full(mesh.cells[0].__len__(), 0, dtype=float)
+        eps = np.full(mesh.cells[0].__len__(), 0, dtype=float)
 
         for key, value in mesh.cell_sets.items():
             face_id = np.argwhere(self.face_ids == int(key))[0, 0]
             face = self.faces[face_id]
             cell_ids = value[tri_elem_type_index]
+
+            g_value[cell_ids] = face.g_value
+            eps[cell_ids] = face.eps
 
             hull_face[cell_ids] = int(face.hull_face)
             internal_face[cell_ids] = int(face.internal_face)
@@ -217,6 +283,8 @@ class Scene(object):
         mesh.cell_data['internal_face'] = [internal_face]
         mesh.cell_data['side1_zone'] = [side1_zone]
         mesh.cell_data['side2_zone'] = [side2_zone]
+        mesh.cell_data['g_value'] = [g_value]
+        mesh.cell_data['eps'] = [eps]
 
         return mesh
 
@@ -240,20 +308,23 @@ class Scene(object):
 
         hull_faces = [k for (k, v) in occurrences.items() if v in [1, 2]]
         inside_faces = [k for (k, v) in occurrences.items() if v == 3]
-        no_occurance = [k for (k, v) in occurrences.items() if v == 1]
-
+        # no_occurance = [k for (k, v) in occurrences.items() if v == 1]
         # np.array([x.hull_face for x in self.faces])
 
         for face in hull_faces:
             face.hull_face = True
+            face.internal_face = True
 
         for face in inside_faces:
             face.internal_face = True
             face.hull_face = False
 
-        # np.array([x.hull_face for x in self.faces])
+        self.topo_done = True
 
-        generate_surface_mesh(faces=no_occurance, method='robust').write('no_occurrence.vtk')
+        # np.array([x.hull_face for x in self.faces])
+        # generate_surface_mesh(faces=no_occurance, method='robust').write('no_occurrence.vtk')
+
+    def generate_face_side_topology(self):
 
         for volume in self.volumes:
             if not volume.is_watertight:
@@ -273,3 +344,7 @@ class Scene(object):
                     face.side2 = volume
                 else:
                     face.side1 = volume
+
+    def generate_terrain(self):
+
+        return generate_terrain(self.hull_mesh, self.terrain_height)

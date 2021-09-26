@@ -46,7 +46,10 @@ def run_example():
                      edges=geo_model.edges,
                      edge_loops=geo_model.edge_loops,
                      faces=geo_model.faces,
-                     volumes=geo_model.volumes)
+                     volumes=geo_model.volumes,
+                     terrain_height=14.2)
+
+    terrain = my_scene.generate_terrain()
 
     my_scene.create_topology()
 
