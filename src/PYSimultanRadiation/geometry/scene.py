@@ -2,9 +2,10 @@ from uuid import uuid4
 import numpy as np
 from .. import logger
 from .utils import generate_mesh, generate_surface_mesh, generate_terrain, generate_sky
-import trimesh
 from collections import Counter
 from copy import copy
+import trimesh
+from trimesh import Trimesh
 
 
 class Scene(object):
@@ -271,6 +272,9 @@ class Scene(object):
 
     def add_mesh_properties(self, mesh=None):
 
+        tri_mesh = Trimesh(vertices=mesh.points,
+                           faces=mesh.cells_dict['triangle'])
+
         logger.info(f'Scene: {self.name}; {self.id}: adding properties to surface mesh...')
 
         if mesh is None:
@@ -298,6 +302,8 @@ class Scene(object):
         g_value = np.full(mesh.cells[0].__len__(), 0, dtype=float)
         eps = np.full(mesh.cells[0].__len__(), 0, dtype=float)
         foi = np.full(mesh.cells[0].__len__(), 0, dtype=float)
+        area = tri_mesh.area_faces
+        normals = tri_mesh.face_normals
 
         for key, value in mesh.cell_sets.items():
             res = np.argwhere(self.face_ids == int(key))
@@ -349,9 +355,10 @@ class Scene(object):
                 if str(face.id) in mesh.cell_sets.keys():
                     value = mesh.cell_sets[str(face.id)]
                     cell_ids = value[tri_elem_type_index]
-                    hull_face[cell_ids] = 0
+                    hull_face[cell_ids] = 1
                     internal_face[cell_ids] = 0
                     opaque[cell_ids] = 1
+                    foi[cell_ids] = 0
 
         if self._sky is not None:
             for face in self._sky.faces:
@@ -371,6 +378,9 @@ class Scene(object):
         mesh.cell_data['g_value'] = [g_value]
         mesh.cell_data['eps'] = [eps]
         mesh.cell_data['foi'] = [foi]
+
+        mesh.cell_data['area'] = [area]
+        mesh.cell_data['normals'] = [normals]
 
         return mesh
 
@@ -485,9 +495,9 @@ class Scene(object):
         self.edge_loops.extend(self.sky.edge_loops)
         self.faces.extend(self.sky.faces)
 
-    def export_shading_analysis_mesh(self, file_name):
+    def generate_shading_analysis_mesh(self, mesh_size=99999):
 
-        logger.info(f'Scene: {self.name}; {self.id}: exporting mesh for  mesh...')
+        logger.info(f'Scene: {self.name}; {self.id}: generating mesh for shading analysis...')
 
         if self._terrain is None:
             _ = self.terrain
@@ -507,12 +517,21 @@ class Scene(object):
                                         edge_loops=edge_loops,
                                         faces=faces,
                                         model_name=str(self.id),
-                                        mesh_size=9999,
-                                        min_size=99999,
-                                        max_size=99999,
+                                        mesh_size=mesh_size,
+                                        min_size=mesh_size,
+                                        max_size=mesh_size,
                                         method='robust',
                                         mesh_size_from_faces=False,
                                         add_mesh_properties=False)
 
         mesh = self.add_mesh_properties(mesh)
+
+        return mesh
+
+    def export_shading_analysis_mesh(self, file_name, mesh_size=9999):
+
+        logger.info(f'Scene: {self.name}; {self.id}: exporting mesh for  mesh...')
+
+        mesh = self.generate_shading_analysis_mesh(mesh_size=mesh_size)
+
         mesh.write(file_name)

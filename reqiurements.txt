@@ -1,0 +1,10 @@
+pandas
+numpy
+cython
+meshio
+trimesh
+PySimultan
+vg
+gmsh
+pygmsh
+pyntcloud

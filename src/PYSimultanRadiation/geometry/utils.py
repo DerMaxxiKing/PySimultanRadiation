@@ -6,7 +6,7 @@ import logging
 from pygmsh.helpers import extract_to_meshio
 import trimesh
 import vg
-from copy import copy
+
 
 import warnings
 warnings.filterwarnings("ignore")
@@ -256,6 +256,11 @@ def generate_surface_mesh(*args, **kwargs):
 def generate_terrain(hull_mesh, terrain_height, border_dist=150, mesh_size=50):
     from .base_geometry import Vertex, Edge, EdgeLoop, Face, Terrain
 
+    terrain = Terrain(vertices=[],
+                      edges=[],
+                      edge_loops=[],
+                      faces=[])
+
     surf_mesh = trimesh.Trimesh(vertices=hull_mesh.points,
                                 faces=hull_mesh.cells[1].data)
 
@@ -265,6 +270,9 @@ def generate_terrain(hull_mesh, terrain_height, border_dist=150, mesh_size=50):
     trimesh.repair.fix_winding(surf_mesh)
 
     path = surf_mesh.section(np.array([0, 0, 1]), np.array([0, 0, terrain_height]))
+
+    if path is None:
+        return terrain
 
     # create terrain face:
 
@@ -333,10 +341,15 @@ def generate_terrain(hull_mesh, terrain_height, border_dist=150, mesh_size=50):
 
     terrain_face = Face(name='Terrain', boundary=el0, holes=holes, mesh_size=mesh_size, foi=False)
 
-    terrain = Terrain(vertices=[*points, p0, p1, p2, p3],
-                      edges=all_edges,
-                      edge_loops=edge_loops,
-                      faces=[terrain_face])
+    terrain.vertices = [*points, p0, p1, p2, p3]
+    terrain.edges = all_edges
+    terrain.edge_loops = edge_loops
+    terrain.faces = [terrain_face]
+
+    # terrain = Terrain(vertices=[*points, p0, p1, p2, p3],
+    #                   edges=all_edges,
+    #                   edge_loops=edge_loops,
+    #                   faces=[terrain_face])
 
     return terrain
 
@@ -478,7 +491,6 @@ def simplify_path(vertices, points):
         length = np.linalg.norm(vertices[new_points[-1], :] - vertices[point])
 
         if length < 0.05:
-            print(f'skipping point {point}: length {length}')
             continue
 
         v1 = vertices[new_points[-1]] - vertices[point]
@@ -487,7 +499,6 @@ def simplify_path(vertices, points):
         angle = vg.angle(v1 / np.linalg.norm(v1), v2 / np.linalg.norm(v2), assume_normalized=True)
 
         if angle < 1:
-            print(f'skipping point {point}: angle {angle}')
             continue
 
         new_points.append(point)
@@ -495,3 +506,8 @@ def simplify_path(vertices, points):
     new_points.append(points[0])
 
     return new_points
+
+
+def cell_data_to_point_data(mesh):
+
+    pass

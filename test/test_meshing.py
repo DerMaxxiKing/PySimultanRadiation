@@ -59,7 +59,8 @@ def run_example():
                      volumes=geo_model.volumes,
                      terrain_height=14.2)
 
-    my_scene.export_shading_analysis_mesh('shading_analysis_mesh.vtk')
+    # my_scene.export_shading_analysis_mesh('shading_analysis_mesh.vtk')
+    my_scene.export_shading_analysis_mesh('shading_analysis_mesh_fine.vtk', mesh_size=1)
 
     my_scene.volumes[0].mesh
 
