@@ -3,6 +3,7 @@ import numpy as np
 import pvlib
 import trimesh
 import meshio
+from src.PYSimultanRadiation.client.client import Client
 
 from copy import copy
 import pickle
@@ -345,6 +346,39 @@ class npyAppendableFile():
         return version, {'descr': dtype,
                          'fortran_order': fortran,
                          'shape': shape}
+
+
+def calc_timestamp(arg,
+                   sample_dist,
+                   num_cells,
+                   numpy_file,
+                   write_vtk,
+                   hull_mesh,
+                   dti,
+                   binary,
+                   vtk_res_path):
+
+    i, sun_window, irradiation_vector =arg
+
+    client = Client(ip='tcp://localhost:8006')
+    count = client.rt_sun_window(scene='hull',
+                                 sun_window=sun_window,
+                                 sample_dist=sample_dist,
+                                 irradiation_vector=irradiation_vector)
+
+    f_sh = np.zeros(num_cells)
+    f_sh[0, 0:count.shape[0]] = count
+
+    if numpy_file is not None:
+        numpy_file.write(np.insert(f_sh[0, :], 0, i))
+
+    if write_vtk:
+        # write_vtk
+        hull_mesh.cell_data['f_sh'] = [f_sh[0, :]]
+        meshio.vtk.write(os.path.join(vtk_res_path, f'shading_{dti[i].strftime("%Y%m%d_%H%M%S")}.vtk'), hull_mesh,
+                         '4.2', binary=binary)
+
+    print('done')
 
 
 if __name__ == '__main__':

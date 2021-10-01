@@ -17,9 +17,11 @@ from src.PYSimultanRadiation.radiation.location import Location
 
 from src.PYSimultanRadiation import TemplateParser
 from src.PYSimultanRadiation.geometry.scene import Scene
-from src.PYSimultanRadiation.radiation.utils import create_sun_window, npyAppendableFile
+from src.PYSimultanRadiation.radiation.utils import create_sun_window, npyAppendableFile, calc_timestamp
 
 import logging
+import multiprocessing
+from functools import partial
 
 # from service_tools import Message
 import meshio
@@ -90,7 +92,7 @@ def run_shading_analysis(scene,
                          ):
 
     print('creating shading analysis mesh')
-    mesh = scene.generate_shading_analysis_mesh(mesh_size=10)
+    mesh = scene.generate_shading_analysis_mesh(mesh_size=0.5)
     print('writing scene')
     mesh.write(os.path.join(output_dir, 'mesh.vtk'))
 
@@ -130,25 +132,7 @@ def run_shading_analysis(scene,
 
     numpy_file = npyAppendableFile(os.path.join(output_dir, 'f_sh.npy'), True)
 
-    @background
-    def calc_timestamp(i, sun_window, irradiation_vector, sample_dist):
-        count = my_client.rt_sun_window(scene='hull',
-                                        sun_window=sun_window,
-                                        sample_dist=sample_dist,
-                                        irradiation_vector=irradiation_vector)
-
-        f_sh = np.zeros(num_cells)
-        f_sh[0, 0:count.shape[0]] = count
-
-        numpy_file.write(np.insert(f_sh[0, :], 0, i))
-
-        if write_vtk:
-            # write_vtk
-            hull_mesh.cell_data['f_sh'] = [f_sh[0, :]]
-            meshio.vtk.write(os.path.join(vtk_res_path, f'shading_{dti[i].strftime("%Y%m%d_%H%M%S")}.vtk'), hull_mesh,
-                             '4.2', binary=binary)
-
-        print('done')
+    # @background
 
     ################################
     #
@@ -156,14 +140,36 @@ def run_shading_analysis(scene,
     #
     #################################
 
-    t_start = time()
-    for i, (index, row) in enumerate(df.iterrows()):
-        if row['irradiation_vector'][2] > 0:
-            continue
-        calc_timestamp(i, row['windows'], row['irradiation_vector'], 0.5)
+    nb_cpus = 2
+    pool = multiprocessing.Pool(processes=nb_cpus)
 
+    part_fcn = partial(calc_timestamp,
+                       sample_dist=0.01,
+                       num_cells=num_cells,
+                       numpy_file=numpy_file,
+                       write_vtk=write_vtk,
+                       hull_mesh=hull_mesh,
+                       dti=dti,
+                       binary=binary,
+                       vtk_res_path=vtk_res_path,
+                       )
+
+    t_start = time()
+    results = pool.map(part_fcn, zip(range(df.shape[0]),
+                                           df['windows'],
+                                           df['irradiation_vector']))
     t_end = time()
     print(f'elapsed Time: {t_end- t_start}')
+
+    #
+    # t_start = time()
+    # for i, (index, row) in enumerate(df.iterrows()):
+    #     if row['irradiation_vector'][2] > 0:
+    #         continue
+    #     calc_timestamp(i, row['windows'], row['irradiation_vector'], 0.5)
+    #
+    # t_end = time()
+    # print(f'elapsed Time: {t_end- t_start}')
 
     # for i, (index, row) in enumerate(df.iterrows()):
     #     print(f"{i}: Irradiation vector {row['irradiation_vector']}")
