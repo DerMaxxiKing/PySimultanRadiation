@@ -3,12 +3,11 @@ from tkinter import filedialog as fd
 import logging
 import os
 
-from PySimultan import DataModel
+from PySimultan import DataModel, Template, yaml
 from src.PYSimultanRadiation import TemplateParser
 from src.PYSimultanRadiation.geometry.scene import Scene
 
 print('hello mr. caushi... I hope now it works :-)')
-
 
 if __name__ == '__main__':
 
@@ -22,11 +21,6 @@ if __name__ == '__main__':
     if template_filename is None:
         logging.error('No Template-File selected')
     print(f'selected {template_filename}')
-
-    output_dir = fd.askdirectory(title='Select output directory...')
-    if output_dir is None:
-        logging.error('No output directory selected')
-    print(f'selected {output_dir}')
 
     template_parser = TemplateParser(template_filepath=template_filename)
     data_model = DataModel(project_path=project_filename)

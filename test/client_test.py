@@ -92,7 +92,7 @@ def run_shading_analysis(scene,
                          ):
 
     print('creating shading analysis mesh')
-    mesh = scene.generate_shading_analysis_mesh(mesh_size=0.5)
+    mesh = scene.generate_shading_analysis_mesh(mesh_size=5)
     print('writing scene')
     mesh.write(os.path.join(output_dir, 'mesh.vtk'))
 
@@ -140,11 +140,11 @@ def run_shading_analysis(scene,
     #
     #################################
 
-    nb_cpus = 2
+    nb_cpus = 4
     pool = multiprocessing.Pool(processes=nb_cpus)
 
     part_fcn = partial(calc_timestamp,
-                       sample_dist=0.01,
+                       sample_dist=1,
                        num_cells=num_cells,
                        numpy_file=numpy_file,
                        write_vtk=write_vtk,

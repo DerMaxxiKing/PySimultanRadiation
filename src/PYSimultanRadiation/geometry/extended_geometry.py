@@ -159,11 +159,11 @@ class FaceExt(object):
             logger.error(f'{self.name}; {self.id}: Error while creating mesh:\n{e}')
             return
 
-        logger.info(f'Surface {self.name}; {self.id}: Surface mesh creation successful')
-
+        if mesh is None:
+            logger.error(f'{self.name}; {self.id}: Error while creating mesh: Empty mesh or None')
+        else:
+            logger.info(f'Surface {self.name}; {self.id}: Surface mesh creation successful')
         return mesh
-
-        # return mesh_planar_face(self, mesh_size=self.mesh_size)
 
     def export_vtk(self, file_name):
         self.mesh.write(file_name)
@@ -187,7 +187,7 @@ class FaceExt(object):
         edges = set(edges)
         vertices = []
         [vertices.extend([x.vertices[0], x.vertices[1]]) for x in edges]
-        vertices = set(vertices)
+        vertices = list(set(vertices))
 
         return vertices
 

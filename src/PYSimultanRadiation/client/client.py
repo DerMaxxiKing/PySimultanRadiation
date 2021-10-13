@@ -1,28 +1,16 @@
 import zmq
-import os
+# import os
+import socket
 import colorlog
 from service_tools.message import Message
+import socketserver
 
 logger = colorlog.getLogger('PySimultanRadiation')
-
 
 try:
     import importlib.resources as pkg_resources
 except ImportError:
     import importlib_resources as pkg_resources
-
-
-from .resources import private_keys
-from .resources import public_keys
-
-
-# class Message(object):
-#
-#     def __init__(self, *args, **kwargs):
-#
-#         self.method = kwargs.get('method', None)
-#         self.args = kwargs.get('args', list())
-#         self.kwargs = kwargs.get('args', dict())
 
 
 class Client(object):
@@ -66,7 +54,7 @@ class Client(object):
           vector of the irradiation, normalized
         """
 
-        self.logger.info('Ray tracing sun window...')
+        self.logger.debug('Ray tracing sun window...')
 
         message = Message(method='rt_sun_window',
                           kwargs=kwargs)
@@ -79,3 +67,21 @@ class Client(object):
             self.logger.info('Mesh successfully send to worker...')
         else:
             return return_value
+
+
+def get_free_port():
+    with socketserver.TCPServer(("localhost", 0), None) as s:
+        port = s.server_address[1]
+    return port
+
+
+def next_free_port(port=1024, max_port=65535):
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    while port <= max_port:
+        try:
+            sock.bind(('', port))
+            sock.close()
+            return port
+        except OSError:
+            port += 1
+    raise IOError('no free ports')

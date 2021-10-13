@@ -8,3 +8,7 @@ vg
 gmsh
 pygmsh
 pyntcloud
+appdirs
+sqlalchemy
+Psycopg2
+openpyxl

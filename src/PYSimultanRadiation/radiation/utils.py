@@ -378,8 +378,6 @@ def calc_timestamp(arg,
         meshio.vtk.write(os.path.join(vtk_res_path, f'shading_{dti[i].strftime("%Y%m%d_%H%M%S")}.vtk'), hull_mesh,
                          '4.2', binary=binary)
 
-    print('done')
-
 
 if __name__ == '__main__':
     arr_a = np.random.rand(5, 40, 10)

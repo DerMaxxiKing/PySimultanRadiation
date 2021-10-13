@@ -495,15 +495,18 @@ class Scene(object):
         self.edge_loops.extend(self.sky.edge_loops)
         self.faces.extend(self.sky.faces)
 
-    def generate_shading_analysis_mesh(self, mesh_size=99999):
+    def generate_shading_analysis_mesh(self, mesh_size=99999, add_terrain=True):
 
         logger.info(f'Scene: {self.name}; {self.id}: generating mesh for shading analysis...')
 
-        if self._terrain is None:
-            _ = self.terrain
+        if bool(add_terrain):
+            if self._terrain is None:
+                _ = self.terrain
 
-        # generate surface mesh:
-        faces = {*self.faces, *self.terrain.faces}
+            # generate surface mesh:
+            faces = {*self.faces, *self.terrain.faces}
+        else:
+            faces = {*self.faces}
 
         edge_loops = set()
         {(edge_loops.add(x.boundary), edge_loops.update(x.holes)) for x in faces}
@@ -524,7 +527,27 @@ class Scene(object):
                                         mesh_size_from_faces=False,
                                         add_mesh_properties=False)
 
+        if mesh is None:
+            logger.error(f"Scene: {self.name}; {self.id}: Could not create mesh for shading analysis.\nRetry with very robust method...")
+
+            mesh = self.create_surface_mesh(vertices=vertices,
+                                            edges=edges,
+                                            edge_loops=edge_loops,
+                                            faces=faces,
+                                            model_name=str(self.id),
+                                            mesh_size=mesh_size,
+                                            min_size=mesh_size,
+                                            max_size=mesh_size,
+                                            method='very robust',
+                                            mesh_size_from_faces=False,
+                                            add_mesh_properties=False)
+
+            if mesh is None:
+                logger.error(f"Scene: {self.name}; {self.id}: Could not create mesh for shading analysis.")
+
         mesh = self.add_mesh_properties(mesh)
+
+        logger.info(f'Scene: {self.name}; {self.id}: Mesh generation for shading analysis successful')
 
         return mesh
 

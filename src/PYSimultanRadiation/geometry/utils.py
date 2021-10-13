@@ -229,8 +229,14 @@ def generate_surface_mesh(*args, **kwargs):
                     [geom.remove(x) for x in holes]
 
             [model.add_physical(value, key) for key, value in polys.items()]
-
             mesh = geom.generate_mesh(dim=2, verbose=verbose)
+
+    elif method == 'very robust':
+
+        tri_msh = trimesh.Trimesh()
+
+        for face in faces:
+            tri_msh = trimesh.util.concatenate([tri_msh, face.trimesh])
 
     else:
         mesh = generate_mesh(vertices=vertices,

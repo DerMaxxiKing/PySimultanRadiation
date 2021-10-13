@@ -1,0 +1,39 @@
+version: '2'
+services:
+    zmq_server:
+        image: "maxxiking/zmq_server:1.0.3"
+        ports:
+            - "8006:8006"
+        volumes:
+            - K:\docker_test\zmq_server:/workdir
+        networks:
+            - shading_network
+        environment:
+            FROM_CONFIG: 0
+            SECURE: 0
+            IP: 0.0.0.0
+            FRONTEND_PORT: 8006
+            BACKEND_PORT: 9006
+            LOG_DIR: logs
+            LOGGING_MODE: DEBUG
+
+    shading_worker:
+        image: "maxxiking/shading_worker:1.0.2"
+        volumes:
+            - K:\docker_test\zmq_server:/workdir
+        networks:
+            - shading_network
+        environment:
+            FROM_CONFIG: 0
+            IP: zmq_server
+            SERVER_PORT: 9006
+            LOG_DIR: logs
+            LOGGING_MODE: DEBUG
+        deploy:
+            mode: replicated
+            replicas: 4
+
+networks:
+  shading_network:
+        name: prod_shading_network
+        driver: bridge

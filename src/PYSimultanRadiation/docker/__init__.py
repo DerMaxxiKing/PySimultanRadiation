@@ -19,5 +19,7 @@ formatter = colorlog.ColoredFormatter(
 
 handler.setFormatter(formatter)
 
-logger = colorlog.getLogger('PySimultanDocker')
+logger = colorlog.getLogger('DockerLogger')
 logger.addHandler(handler)
+
+logger.setLevel('DEBUG')
