@@ -774,12 +774,12 @@ class ShadingAnalysis(object):
                     # -------------------------------------------------------------------------------------------------
                     logger.info(f'Writing xlsx Mean Shading Factors')
 
-                    face_f_sh.mean(axis=0).to_excel(writer,
-                                                    sheet_name='Mean Shading Factors',
-                                                    index=True,
-                                                    startrow=1,
-                                                    startcol=0
-                                                    )
+                    face_f_sh.mean(axis=0).T.to_excel(writer,
+                                                      sheet_name='Mean Shading Factors',
+                                                      index=True,
+                                                      startrow=1,
+                                                      startcol=0
+                                                      )
                     worksheet = workbook['Mean Shading Factors']
 
                     for i in range(self.scene.faces.__len__()):
