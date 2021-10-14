@@ -1,5 +1,6 @@
 from PySimultan.default_types import SimultanObject
 
+
 class Weather(SimultanObject):
 
     def __init__(self, *args, **kwargs):

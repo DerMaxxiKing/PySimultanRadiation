@@ -116,7 +116,7 @@ class ShadingService(object):
             logger.error(f"Command Result: {result.stderr}\nfor \n\n{cmd}")
             self.shut_down_service()
         else:
-            logger.info(f"Command Result: {result.stderr}")
+            logger.debug(f"Command Result: {result.stderr}")
             logger.info(f"Shading service successfully started")
             self.running = True
 
@@ -130,7 +130,7 @@ class ShadingService(object):
         if result.returncode:
             logger.error(f"Command Result: {result.stderr}")
         else:
-            logger.info(f"Command Result: {result.stderr}")
+            logger.debug(f"Command Result: {result.stderr}")
             logger.info(f"Shading service successfully shut down")
             self.running = False
 

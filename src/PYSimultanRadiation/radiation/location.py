@@ -10,7 +10,8 @@ class Location():
         file_name = kwargs.get('file_name')
         self.north_angle = kwargs.get('north_angle', 0)
 
-        self.data, self.metadata = pvlib.iotools.read_epw(file_name)
+        self.data, self.metadata = pvlib.iotools.read_epw(file_name,
+                                                          coerce_year=2021)
 
         self.location = pvlib.location.Location.from_epw(self.metadata)
 

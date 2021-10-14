@@ -16,3 +16,6 @@ resources
 results
 test
 *.vtk
+*.msh
+*.simultan
+*.simgeo

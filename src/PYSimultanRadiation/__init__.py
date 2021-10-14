@@ -29,7 +29,6 @@ formatter = colorlog.ColoredFormatter(
     style='%'
 )
 
-
 handler.setFormatter(formatter)
 
 logger = colorlog.getLogger('PySimultanRadiation')

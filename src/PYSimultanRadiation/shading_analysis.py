@@ -17,6 +17,7 @@ from .radiation.utils import create_sun_window, npyAppendableFile, calc_timestam
 from .client.client import Client, get_free_port, next_free_port
 from .docker.docker_manager import ShadingService
 from . import logger
+from .utils import df_interpolate_at, write_df_in_empty_table
 import asyncio
 from functools import partial
 from tqdm.asyncio import tqdm as async_tqdm
@@ -24,12 +25,15 @@ from tqdm.asyncio import tqdm as async_tqdm
 from trimesh import Trimesh
 import meshio
 from tqdm import tqdm, trange
+from multiprocessing import Pool
 
 import psycopg2
 from psycopg2 import Error
 from sqlalchemy import create_engine
 from sqlalchemy.dialects import postgresql
 import sqlalchemy
+from sqlalchemy import Table, Column, Integer, String, MetaData
+
 
 from PySimultan import logger as py_sim_logger
 
@@ -185,15 +189,23 @@ class ShadingAnalysis(object):
                             self.setup_component.TimestepSize,
                             self.setup_component.TimestepUnit]:
 
-                self._dti = pd.Series(pd.date_range(self.setup_component.StartDate,
+                start_date = pd.to_datetime(self.setup_component.StartDate, format='%d.%m.%Y %H:%M:%S')
+
+                self._dti = pd.Series(pd.date_range(start_date,
                                                     periods=self.setup_component.NumTimesteps,
-                                                    freq=f"{self.setup_component.TimestepSize}{self.setup_component.TimestepUnit}"))
+                                                    freq=f"{self.setup_component.TimestepSize}{self.setup_component.TimestepUnit}",
+                                                    tz='UTC'),
+                                      )
             elif None not in [self.setup_component.StartDate,
                               self.setup_component.EndDate,
                               self.setup_component.NumTimesteps]:
-                self._dti = pd.date_range(start=self.setup_component.StartDate,
-                                          end=self.setup_component.EndDate,
-                                          periods=self.setup_component.NumTimesteps)
+                start_date = pd.to_datetime(self.setup_component.StartDate, format='%d.%m.%Y %H:%M:%S')
+                end_date = pd.to_datetime(self.setup_component.EndDate, format='%d.%m.%Y %H:%M:%S')
+
+                self._dti = pd.date_range(start=start_date,
+                                          end=end_date,
+                                          periods=self.setup_component.NumTimesteps,
+                                          tz='UTC')
 
         return self._dti
 
@@ -277,7 +289,10 @@ class ShadingAnalysis(object):
                                                          add_terrain=self.setup_component.AddTerrain)
 
     def write_mesh(self):
+
         if self.mesh is not None:
+            if not os.path.isdir(self.setup_component.ExportDirectory):
+                os.makedirs(self.setup_component.ExportDirectory, exist_ok=True)
             self.mesh.write(os.path.join(self.setup_component.ExportDirectory, f'{self.setup_component.name}_mesh.vtk'))
 
     def generate_foi_mesh(self):
@@ -318,7 +333,8 @@ class ShadingAnalysis(object):
 
         logger.info(f'Getting free ports...')
         port = get_free_port()
-        db_port = next_free_port(port=port+1, max_port=65535)
+        db_port = next_free_port(port=9006, max_port=65535)
+        logger.debug(f'db_port is {db_port}')
         logger.info(f'Server-port {port}; Database-port: {db_port}')
 
         serv_work_workdir = os.path.join(self.setup_component.ExportDirectory, 'serv_work_workdir')
@@ -333,8 +349,6 @@ class ShadingAnalysis(object):
                                             password=self.password,
                                             db_name=self.db_name)
 
-        print(my_shading_service.db_dir)
-
         my_client = Client(ip=f'tcp://localhost:{port}')
 
         my_shading_service.write_compose_file('docker_compose_test.yml')
@@ -348,10 +362,25 @@ class ShadingAnalysis(object):
             # check if database ready:
             logger.info(f'Initializing database')
             tablename = 'f_sh'
-            engine = create_engine(f'postgresql://{self.user_name}:{self.password}@localhost:{db_port}/{str(self.id.GlobalId)}')
+            engine = create_engine(
+                f'postgresql://{self.user_name}:{self.password}@localhost:{db_port}/{str(self.id.GlobalId)}')
+            # engine.dispose()
 
             # delete existing table:
             sql.execute('DROP TABLE IF EXISTS %s' % tablename, engine)
+
+            # create f_sh table
+            meta = MetaData()
+
+            f_sh_table = Table(
+                'f_sh', meta,
+                Column('date', sqlalchemy.TIMESTAMP(), primary_key=True),
+                Column('irradiation_vector', postgresql.ARRAY(sqlalchemy.types.FLOAT)),
+                Column('f_sh', postgresql.ARRAY(sqlalchemy.types.FLOAT)),
+            )
+
+            meta.create_all(engine)
+
             # sql.execute('VACUUM', engine)
 
             # part_fcn = partial(calc_timestep_async,
@@ -366,6 +395,37 @@ class ShadingAnalysis(object):
             my_client.send_mesh(self.mesh)
 
             logger.info(f'Starting calculation...')
+
+            rt_engine = RTEngine(port=port,
+                                 sample_dist=self.setup_component.RayResolution,
+                                 num_cells=num_cells,
+                                 tablename=tablename,
+                                 user_name=self.user_name,
+                                 password=self.password,
+                                 db_port=db_port,
+                                 id=str(self.id.GlobalId),
+                                 f_sh_table=f_sh_table)
+
+            if int(self.setup_component.NumWorkers) == 1:
+                for row in tqdm(list(df.iterrows()),
+                                total=df.shape[0],
+                                desc='Running ray casting for timesteps:',
+                                colour='green'):
+                    rt_engine(row)
+            else:
+                try:
+                    logger.info('Creating multiprocessing pool...')
+                    pool = Pool(int(self.setup_component.NumWorkers))
+                    # pool.map(rt_engine, list(df.iterrows()))
+                    for _ in tqdm(pool.imap_unordered(rt_engine, list(df.iterrows())),
+                                  total=df.shape[0],
+                                  desc='Running ray casting for timesteps',
+                                  colour='green'):
+                        pass
+                    logger.info(f'Ray casting finished')
+                finally:  # To make sure processes are closed in the end, even if errors happen
+                    pool.close()
+                    pool.join()
 
             # https://leimao.github.io/blog/Python-tqdm-AsyncIO/
             # async def run_loops(df):
@@ -388,20 +448,37 @@ class ShadingAnalysis(object):
             #                    num_cells=num_cells,
             #                    db_engine=engine,
             #                    tablename=tablename
-            #                    )
+            # #                    )
+            #
+            # coros = [calc_timestep_async(port=port,
+                                         #                                  db_engine=engine,
+                                         #                                  sun_window=df_row['windows'],
+                                         #                                  sample_dist=self.setup_component.RayResolution,
+                                         #                                  irradiation_vector=df_row['irradiation_vector'],
+                                         #                                  num_cells=num_cells,
+                                         #                                  date=ts_date,
+                                         #                                  tablename=tablename,
+                                         #                                  pbar=pbar,
+                                         #                                  process=process) for (ts_date, df_row) in df.iterrows()]
 
-            loop = asyncio.get_event_loop()
-            coros = [calc_timestep_async(client=my_client,
-                                         db_engine=engine,
-                                         sun_window=df_row['windows'],
-                                         sample_dist=self.setup_component.RayResolution,
-                                         irradiation_vector=df_row['irradiation_vector'],
-                                         num_cells=num_cells,
-                                         date=ts_date,
-                                         tablename=tablename) for (ts_date, df_row) in df.iterrows()]
-            all_groups = async_tqdm.gather(*coros)
-            results = loop.run_until_complete(all_groups)
-            loop.close()
+
+            # process = 0
+            # with tqdm(total=df.shape[0]+1, desc='Calculating results for timesteps:', colour='green') as pbar:
+            #     loop = asyncio.get_event_loop()
+            #     coros = [calc_timestep_async(port=port,
+            #                                  db_engine=engine,
+            #                                  sun_window=df_row['windows'],
+            #                                  sample_dist=self.setup_component.RayResolution,
+            #                                  irradiation_vector=df_row['irradiation_vector'],
+            #                                  num_cells=num_cells,
+            #                                  date=ts_date,
+            #                                  tablename=tablename,
+            #                                  pbar=pbar,
+            #                                  process=process) for (ts_date, df_row) in df.iterrows()]
+            #     all_groups = async_tqdm.gather(*coros)
+            #     results = loop.run_until_complete(all_groups)
+            #     pbar.update(df.shape[0]+1)
+            #     loop.close()
 
             # await asyncio.gather(*coros)
             # loop = asyncio.get_event_loop()
@@ -431,11 +508,7 @@ class ShadingAnalysis(object):
             # # for f in futures:
             #     f.cancel()
 
-            logger.info(f'Calculation finished')
-
             logger.info(f'Getting results from database')
-            with engine.connect() as con:
-                con.execute(f"ALTER TABLE {tablename} ADD PRIMARY KEY (\"date\");")
 
             f_sh = pd.read_sql_query(f"select * from \"{tablename}\"", con=engine, index_col='date').sort_values(by='date')
 
@@ -452,10 +525,25 @@ class ShadingAnalysis(object):
             face_names = dict(zip([x.id for x in self.scene.faces if x.components],
                                   [x.components[0].name for x in self.scene.faces if x.components]))
 
+            # dni: direct normal irradiation from weather data:
+            dni = self.location.data['dni']
+            # remove localization of data
+            dni.index = dni.index.tz_localize(None)
+            # replace the year of the required timestamps with 2021 -> the year with which weather data is loaded
+            req_timestamps = pd.Series([x.replace(year=2021) for x in f_sh.index])
+
+            # dni_req_ts: direct normal irradiation from weather data at requested timesteps:
+            dni_req_ts = df_interpolate_at(dni, req_timestamps, method='linear', axis='index')
+            # write dni to database
+            write_df_in_empty_table(dni_req_ts, 'dni', engine)
+
             # for every face calculate the mean f_sh
+
+            face_areas = pd.DataFrame(index=[0])
             for key, value in self.mesh.cell_sets.items():
                 f_areas = areas[value[1]]
                 f_areas_sum = sum(areas[value[1]])
+                face_areas[key] = f_areas_sum
 
                 def aggregate(x):
                     return np.sum(np.array(x)[value[1]] * f_areas) / f_areas_sum
@@ -465,11 +553,26 @@ class ShadingAnalysis(object):
 
             logger.info(f'Writing aggregated results to database')
             # write to database:
-            sql.execute('DROP TABLE IF EXISTS %s' % 'face_f_sh', engine)
-            face_f_sh.to_sql('face_f_sh',
-                             engine,
-                             if_exists='append',
-                             index=False)
+            write_df_in_empty_table(face_areas, 'face_areas', engine, index=False)
+            write_df_in_empty_table(face_f_sh, 'face_f_sh', engine)
+
+            # calculate specific irradiation:
+            face_q_dot = face_f_sh.multiply(dni_req_ts, axis=0)
+            write_df_in_empty_table(face_q_dot, 'face_q_dot', engine)
+
+            # calculate total irradiation:
+            face_Q_dot = pd.DataFrame(index=face_q_dot.index)
+            for column in face_q_dot.columns:
+                face_Q_dot[column] = face_q_dot[column].multiply(face_areas[column][0], axis=0)
+            write_df_in_empty_table(face_Q_dot, 'face_q_tot_dot', engine)
+
+            # calculate irradiated amount of heat:
+            from scipy import integrate
+            face_Q = pd.DataFrame(integrate.cumtrapz(face_Q_dot.values,
+                                                     (face_Q_dot.index.asi8 - face_Q_dot.index.asi8[0]) * 1e-9, axis=0),
+                                  index=face_Q_dot.index[1:])
+            write_df_in_empty_table(face_Q, 'face_Q', engine)
+
 
             # ---------------------------------------------------------------------------------------------------------
             # write vtk
@@ -484,8 +587,15 @@ class ShadingAnalysis(object):
 
                 # ------------------------------------------------------------------------------------------------------
 
-                logger.info(f'Writing raw mesh results')
+                logger.info(f'Writing vtk raw mesh results')
                 vtk_path = os.path.join(self.setup_component.ExportDirectory, 'vtk', 'raw')
+
+                f_sh_array = np.vstack(f_sh['f_sh'].values)
+                q_dot = np.multiply(f_sh_array, dni_req_ts.values[:, np.newaxis])
+                Q_dot = q_dot * areas
+                Q = np.zeros(q_dot.shape)
+                Q[1:, :] = integrate.cumtrapz(q_dot, (f_sh.index.asi8 - f_sh.index.asi8[0]) * 1e-9, axis=0)
+
                 if not os.path.isdir(vtk_path):
                     os.makedirs(vtk_path, exist_ok=True)
                 for i, (index, row) in enumerate(tqdm(f_sh.iterrows(),
@@ -495,14 +605,17 @@ class ShadingAnalysis(object):
                 # for i, (index, row) in enumerate(f_sh.iterrows()):
                     if f_sh.iloc[i]['irradiation_vector'][2] > 0:
                         continue
-                    vtk_mesh.cell_data['f_sh'] = [np.array(f_sh['f_sh'].values[i])]
+                    vtk_mesh.cell_data['f_sh'] = [f_sh_array[i, :]]
+                    vtk_mesh.cell_data['q_dot'] = [q_dot[i, :]]
+                    vtk_mesh.cell_data['Q_dot'] = [Q_dot[i, :]]
+                    vtk_mesh.cell_data['Q'] = [Q[i, :]]
                     meshio.vtk.write(os.path.join(vtk_path, f"shading_{index.strftime('%Y%m%d_%H%M%S')}.vtk"),
                                      vtk_mesh,
                                      binary=True)
 
                 # ------------------------------------------------------------------------------------------------------
 
-                logger.info(f'Writing f_sh_mean')
+                logger.info(f'Writing vtk f_sh_mean')
                 vtk_path = os.path.join(self.setup_component.ExportDirectory, 'vtk')
                 vtk_mesh.cell_data = {}
                 vtk_mesh.cell_data['f_sh_mean'] = [np.stack(f_sh['f_sh'].values,
@@ -514,35 +627,46 @@ class ShadingAnalysis(object):
 
                 # ------------------------------------------------------------------------------------------------------
 
-                logger.info(f'Writing f_sh_faces')
+                logger.info(f'Writing vtk f_sh_faces')
                 vtk_mesh.cell_data = {}
                 vtk_path = os.path.join(self.setup_component.ExportDirectory, 'vtk', 'face_f_sh')
                 if not os.path.isdir(vtk_path):
                     os.makedirs(vtk_path, exist_ok=True)
 
                 face_f_sh_vec = np.zeros([face_f_sh.shape[0], self.mesh.cells[0].data.shape[0]])
+                face_q_dot_vec = np.zeros([face_f_sh.shape[0], self.mesh.cells[0].data.shape[0]])
+                face_Q_dot_vec = np.zeros([face_f_sh.shape[0], self.mesh.cells[0].data.shape[0]])
+                face_Q_vec = np.zeros([face_f_sh.shape[0], self.mesh.cells[0].data.shape[0]])
                 # for key, value in self.mesh.cell_sets.items():
                 for key, value in tqdm(self.mesh.cell_sets.items(),
                                        total=f_sh.shape[0],
                                        colour='green',
-                                       desc="Writing f_sh for faces:"):
+                                       desc="Writing f_sh for faces"):
 
                     values = np.array(face_f_sh[key])
-                    face_f_sh_vec[:, self.mesh.cell_sets[key][1]] = np.broadcast_to(values,
-                                                                                    (self.mesh.cell_sets[key][1].shape[
-                                                                                         0],
-                                                                                     values.shape[0])
-                                                                                    ).T
+
+                    cell_ids = self.mesh.cell_sets[key][1]
+
+                    face_f_sh_vec[:, cell_ids] = np.broadcast_to(values, (cell_ids.shape[0],values.shape[0])).T
+                    face_q_dot_vec[:, cell_ids] = np.multiply(face_f_sh_vec[:, cell_ids],
+                                                              dni_req_ts.values[:, np.newaxis])
+                    face_Q_dot_vec[:, cell_ids] = face_q_dot_vec[:, cell_ids] * areas[cell_ids]
+                    face_Q_vec[1:, cell_ids] = integrate.cumtrapz(face_q_dot_vec[:, cell_ids],
+                                                                  (f_sh.index.asi8 - f_sh.index.asi8[0]) * 1e-9,
+                                                                  axis=0)
 
                 # for i in range(face_f_sh.shape[0]):
                 for i in trange(face_f_sh.shape[0],
                                 total=f_sh.shape[0],
                                 colour='green',
-                                desc="Writing irradiation vector vtks:"):
+                                desc="Writing irradiation vector vtks"):
 
                     if f_sh['irradiation_vector'].iloc[i][2] > 0:
                         continue
                     vtk_mesh.cell_data['face_f_sh'] = [face_f_sh_vec[i, :]]
+                    vtk_mesh.cell_data['face_q_dot'] = [face_q_dot_vec[i, :]]
+                    vtk_mesh.cell_data['face_Q_dot'] = [face_Q_dot_vec[i, :]]
+                    vtk_mesh.cell_data['face_Q'] = [face_Q_vec[i, :]]
                     meshio.vtk.write(os.path.join(vtk_path,
                                                   f"shading_{face_f_sh.index[i].strftime('%Y%m%d_%H%M%S')}.vtk"
                                                   ),
@@ -551,7 +675,7 @@ class ShadingAnalysis(object):
 
                 # ------------------------------------------------------------------------------------------------------
 
-                logger.info(f'Writing f_sh_faces_mean')
+                logger.info(f'Writing vtk f_sh_faces_mean')
                 vtk_path = os.path.join(self.setup_component.ExportDirectory, 'vtk')
                 if not os.path.isdir(vtk_path):
                     os.makedirs(vtk_path, exist_ok=True)
@@ -577,6 +701,8 @@ class ShadingAnalysis(object):
 
                     workbook = writer.book
 
+                    logger.info(f'Writing xlsx summary')
+
                     summary_df = pd.DataFrame(data={'Analysis ID': self.id.LocalId,
                                                     'Analysis Name': self.setup_component.name,
                                                     'North Angle': self.setup_component.NorthAngle,
@@ -600,25 +726,39 @@ class ShadingAnalysis(object):
                                           startrow=1,
                                           startcol=1)
 
+                    writer.save()
+
+                    # -------------------------------------------------------------------------------------------------
+                    # write irradiation vectors
+                    # -------------------------------------------------------------------------------------------------
+                    logger.info(f'Writing xlsx irradiation vectors')
+
                     irradiation_vectors_df = pd.DataFrame(data={'x': df['irradiation_vector'].apply(lambda x: x[0]),
                                                                 'y': df['irradiation_vector'].apply(lambda x: x[1]),
                                                                 'z': df['irradiation_vector'].apply(lambda x: x[2])})
 
+                    irradiation_vectors_df.index = irradiation_vectors_df.index.tz_localize(None)
                     irradiation_vectors_df.to_excel(writer,
                                                     sheet_name='Irradiation Vectors',
                                                     index=True,
                                                     startrow=0,
                                                     startcol=0)
 
+                    writer.save()
+
+                    # -------------------------------------------------------------------------------------------------
+                    # write face_f_sh
+                    # -------------------------------------------------------------------------------------------------
+                    logger.info(f'Writing xlsx Shading Factors')
 
                     face_f_sh.to_excel(writer,
-                                       sheet_name='f_sh',
+                                       sheet_name='Shading Factors',
                                        index=True,
                                        startrow=1,
                                        startcol=0
                                        )
 
-                    worksheet = workbook['f_sh']
+                    worksheet = workbook['Shading Factors']
 
                     for i in range(self.scene.faces.__len__()):
                         c1 = worksheet.cell(row=1, column=i+2)
@@ -629,7 +769,96 @@ class ShadingAnalysis(object):
 
                     writer.save()
 
+                    # -------------------------------------------------------------------------------------------------
+                    # write face_f_sh_mean
+                    # -------------------------------------------------------------------------------------------------
+                    logger.info(f'Writing xlsx Mean Shading Factors')
 
+                    face_f_sh.mean(axis=0).to_excel(writer,
+                                                    sheet_name='Mean Shading Factors',
+                                                    index=True,
+                                                    startrow=1,
+                                                    startcol=0
+                                                    )
+                    worksheet = workbook['Mean Shading Factors']
+
+                    for i in range(self.scene.faces.__len__()):
+                        c1 = worksheet.cell(row=1, column=i + 2)
+                        if self.scene.faces[i].components:
+                            c1.value = self.scene.faces[i].components[0].name
+                        else:
+                            c1.value = ''
+
+                    writer.save()
+
+                    # -------------------------------------------------------------------------------------------------
+                    # write face_solar_irradiation q_dot
+                    # -------------------------------------------------------------------------------------------------
+                    logger.info(f'Writing xlsx Specific Irradiation')
+
+                    face_q_dot.to_excel(writer,
+                                        sheet_name='Specific Irradiation',
+                                        index=True,
+                                        startrow=1,
+                                        startcol=0
+                                        )
+
+                    worksheet = workbook['Specific Irradiation']
+
+                    for i in range(self.scene.faces.__len__()):
+                        c1 = worksheet.cell(row=1, column=i + 2)
+                        if self.scene.faces[i].components:
+                            c1.value = self.scene.faces[i].components[0].name
+                        else:
+                            c1.value = ''
+
+                    writer.save()
+
+                    # -------------------------------------------------------------------------------------------------
+                    # write face_solar_irradiation Q_dot
+                    # -------------------------------------------------------------------------------------------------
+                    logger.info(f'Writing xlsx Absolute irradiation')
+
+                    face_Q_dot.to_excel(writer,
+                                        sheet_name='Absolute irradiation',
+                                        index=True,
+                                        startrow=1,
+                                        startcol=0
+                                        )
+
+                    worksheet = workbook['Absolute irradiation']
+
+                    for i in range(self.scene.faces.__len__()):
+                        c1 = worksheet.cell(row=1, column=i + 2)
+                        if self.scene.faces[i].components:
+                            c1.value = self.scene.faces[i].components[0].name
+                        else:
+                            c1.value = ''
+
+                    writer.save()
+
+                    # -------------------------------------------------------------------------------------------------
+                    # write face_solar_irradiation Q
+                    # -------------------------------------------------------------------------------------------------
+                    logger.info(f'Writing xlsx Specific amount of heat')
+
+                    face_Q.to_excel(writer,
+                                    sheet_name='Specific amount of heat',
+                                    index=True,
+                                    startrow=1,
+                                    startcol=0
+                                    )
+
+                    worksheet = workbook['Specific amount of heat']
+
+                    for i in range(self.scene.faces.__len__()):
+                        c1 = worksheet.cell(row=1, column=i + 2)
+                        if self.scene.faces[i].components:
+                            c1.value = self.scene.faces[i].components[0].name
+                        else:
+                            c1.value = ''
+
+                    writer.save()
 
 
     def generate_hull_mesh(self):
@@ -644,29 +873,104 @@ class ShadingAnalysis(object):
         pass
 
 
-async def calc_timestep_async(client=None,
+class RTEngine(object):
+
+    def __init__(self, *args, **kwargs):
+
+        self.client = None
+        self.db_engine = None
+        self.conn = None
+
+        self.port = kwargs.get('port')
+        # self.db_engine = kwargs.get('db_engine')
+        self.sample_dist = kwargs.get('sample_dist')
+        self.num_cells = kwargs.get('num_cells')
+        self.tablename = kwargs.get('tablename')
+
+        self.user_name = kwargs.get('user_name')
+        self.password = kwargs.get('password')
+        self.db_port = kwargs.get('db_port')
+
+        self.id = kwargs.get('id')  # str(self.id.GlobalId)
+        self.f_sh_table = kwargs.get('f_sh_table')
+
+    def __call__(self, *args, **kwargs):
+
+        date = args[0][0]
+        df_row = args[0][1]
+
+        if self.db_engine is None:
+            self.engine = create_engine(
+                f'postgresql://{self.user_name}:{self.password}@localhost:{self.db_port}/{self.id}')
+        if self.client is None:
+            self.client = Client(ip=f'tcp://localhost:{self.port}')
+
+        if self.conn is None:
+            self.conn = self.engine.connect()
+
+        irradiation_vector = df_row['irradiation_vector']
+        sun_window = df_row['windows']
+
+        f_sh = np.zeros([self.num_cells])
+
+        if irradiation_vector[2] < 0:
+            rt_start_time = time.time()
+            count = self.client.rt_sun_window(scene='hull',
+                                              sun_window=sun_window,
+                                              sample_dist=self.sample_dist,
+                                              irradiation_vector=irradiation_vector)
+
+            f_sh[0:count.shape[0]] = count
+            rt_end_time = time.time()
+            # logger.info(f'RayTracing needed: {rt_end_time - rt_start_time}')
+
+        # write to database
+        # df0 = pd.DataFrame({'irradiation_vector': [irradiation_vector.tolist()],
+        #                     'f_sh': [f_sh.tolist()]},
+        #                    index=[date])
+        ins = self.f_sh_table.insert().values(date=date,
+                                              irradiation_vector=irradiation_vector.tolist(),
+                                              f_sh=f_sh.tolist())
+        result = self.conn.execute(ins)
+
+        # # logger.info(f'writing results for timestep: {date}')
+        # df0.to_sql(self.tablename,
+        #            self.db_engine,
+        #            if_exists='append',
+        #            index=True,
+        #            dtype={'date': sqlalchemy.TIMESTAMP(),
+        #                   'irradiation_vector': postgresql.ARRAY(sqlalchemy.types.FLOAT),
+        #                   'f_sh': postgresql.ARRAY(sqlalchemy.types.FLOAT)
+        #                   }
+        #            )
+
+
+def calc_timestep_async(port=None,
                         db_engine=None,
                         sun_window=None,
                         sample_dist=None,
                         irradiation_vector=None,
                         num_cells=None,
                         date=None,
-                        tablename=None):
+                        tablename=None,
+                        pbar=None,
+                        process=None):
 
-    start_time = time.time()
+    # start_time = time.time()
+    client = Client(ip=f'tcp://localhost:{port}')
 
     # logger.info(f'processing timestep: {date}')
 
     f_sh = np.zeros([num_cells])
 
     if irradiation_vector[2] < 0:
-        rt_start_time = time.time()
+        # rt_start_time = time.time()
         count = client.rt_sun_window(scene='hull',
                                      sun_window=sun_window,
                                      sample_dist=sample_dist,
                                      irradiation_vector=irradiation_vector)
         f_sh[0:count.shape[0]] = count
-        rt_end_time = time.time()
+        # rt_end_time = time.time()
         # logger.info(f'RayTracing needed: {rt_end_time - rt_start_time}')
 
     # write to database
@@ -685,5 +989,5 @@ async def calc_timestep_async(client=None,
                       }
                )
 
-    end_time = time.time()
+    # end_time = time.time()
     # logger.info(f'processing needed: {end_time - start_time}')
