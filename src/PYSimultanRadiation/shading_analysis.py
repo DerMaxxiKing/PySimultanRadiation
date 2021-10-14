@@ -510,7 +510,7 @@ class ShadingAnalysis(object):
 
             logger.info(f'Getting results from database')
 
-            f_sh = pd.read_sql_query(f"select * from \"{tablename}\"", con=engine, index_col='date').sort_values(by='date')
+            f_sh = pd.read_sql_query(f"""select * from {'"'}{tablename}{'"'}""", con=engine, index_col='date').sort_values(by='date')
 
             # ----------------------------------------------------------------------------------------------------------
             # create f_sh_for named faces:
@@ -535,44 +535,65 @@ class ShadingAnalysis(object):
             # dni_req_ts: direct normal irradiation from weather data at requested timesteps:
             dni_req_ts = df_interpolate_at(dni, req_timestamps, method='linear', axis='index')
             # write dni to database
-            write_df_in_empty_table(dni_req_ts, 'dni', engine)
+            try:
+                write_df_in_empty_table(dni_req_ts, 'dni', engine)
+            except Exception as e:
+                logger.error(f'Error writing dni to database: {e}')
 
             # for every face calculate the mean f_sh
 
             face_areas = pd.DataFrame(index=[0])
-            for key, value in self.mesh.cell_sets.items():
+            # for key, value in self.mesh.cell_sets.items():
+            f_sh_mat = np.vstack(f_sh['f_sh'].values)
+            for key, value in tqdm(self.mesh.cell_sets.items(),
+                                   total=len(self.mesh.cell_sets),
+                                   colour='green',
+                                   desc="Aggregating results for faces"):
+
                 f_areas = areas[value[1]]
                 f_areas_sum = sum(areas[value[1]])
                 face_areas[key] = f_areas_sum
 
-                def aggregate(x):
-                    return np.sum(np.array(x)[value[1]] * f_areas) / f_areas_sum
-
-                # face_f_sh[key] = f_sh['f_sh'].apply(lambda x: sum(np.array(x)[value[1]] * areas[value[1]]) / sum(areas[value[1]]))
-                face_f_sh[key] = f_sh['f_sh'].apply(aggregate)
+                # def aggregate(x):
+                #     return np.sum(np.array(x)[value[1]] * f_areas) / f_areas_sum
+                #
+                # # face_f_sh[key] = f_sh['f_sh'].apply(lambda x: sum(np.array(x)[value[1]] * areas[value[1]]) / sum(areas[value[1]]))
+                # face_f_sh[key] = f_sh['f_sh'].apply(aggregate)
+                face_f_sh[key] = np.sum(f_sh_mat[:, value[1]] * f_areas, axis=1) / f_areas_sum
 
             logger.info(f'Writing aggregated results to database')
             # write to database:
-            write_df_in_empty_table(face_areas, 'face_areas', engine, index=False)
-            write_df_in_empty_table(face_f_sh, 'face_f_sh', engine)
+            try:
+                write_df_in_empty_table(face_areas, 'face_areas', engine, index=False)
+                write_df_in_empty_table(face_f_sh, 'face_f_sh', engine)
+            except Exception as e:
+                logger.error(f'Error writing face_areas, face_f_sh to database: {e}')
 
             # calculate specific irradiation:
             face_q_dot = face_f_sh.multiply(dni_req_ts, axis=0)
-            write_df_in_empty_table(face_q_dot, 'face_q_dot', engine)
+            try:
+                write_df_in_empty_table(face_q_dot, 'face_q_dot', engine)
+            except Exception as e:
+                logger.error(f'Error writing face_q_dot to database: {e}')
 
             # calculate total irradiation:
             face_Q_dot = pd.DataFrame(index=face_q_dot.index)
             for column in face_q_dot.columns:
                 face_Q_dot[column] = face_q_dot[column].multiply(face_areas[column][0], axis=0)
-            write_df_in_empty_table(face_Q_dot, 'face_q_tot_dot', engine)
+            try:
+                write_df_in_empty_table(face_Q_dot, 'face_q_tot_dot', engine)
+            except Exception as e:
+                logger.error(f'Error writing face_q_tot_dot to database: {e}')
 
             # calculate irradiated amount of heat:
             from scipy import integrate
             face_Q = pd.DataFrame(integrate.cumtrapz(face_Q_dot.values,
                                                      (face_Q_dot.index.asi8 - face_Q_dot.index.asi8[0]) * 1e-9, axis=0),
                                   index=face_Q_dot.index[1:])
-            write_df_in_empty_table(face_Q, 'face_Q', engine)
-
+            try:
+                write_df_in_empty_table(face_Q, 'face_Q', engine)
+            except Exception as e:
+                logger.error(f'Error writing face_Q to database: {e}')
 
             # ---------------------------------------------------------------------------------------------------------
             # write vtk

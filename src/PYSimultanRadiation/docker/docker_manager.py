@@ -51,7 +51,7 @@ class ShadingService(object):
         if self._db_dir is None:
             # check if directory exist, otherwise create
             data_path = user_data_dir('PySimultanRadiation', 'TU_Wien')
-            db_dir = Path(data_path, 'db')
+            db_dir = Path(data_path, 'db', str(self.user))
             db_dir.mkdir(parents=True, exist_ok=True)
             self._db_dir = str(db_dir)
         return self._db_dir
