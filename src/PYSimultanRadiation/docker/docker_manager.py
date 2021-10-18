@@ -6,6 +6,7 @@ import time
 from appdirs import user_data_dir
 from pathlib import Path
 import os
+import psycopg2
 
 try:
     import importlib.resources as pkg_resources
@@ -16,8 +17,141 @@ except ImportError:
 
 from . import resources
 
-with pkg_resources.path(resources, 'docker-compose_template.yml') as r_path:
+with pkg_resources.path(resources, 'docker-compose_shading.yml') as r_path:
     compose_template_filename = str(r_path)
+
+with pkg_resources.path(resources, 'docker-compose_db.yml') as r_path:
+    db_compose_template_filename = str(r_path)
+
+
+class DatabaseService(object):
+
+    def __init__(self, *args, **kwargs):
+
+        self._shared_dir = None
+        self._workdir = kwargs.get('workdir', None)
+
+        self.port = kwargs.get('port', 9006)
+        self.user = kwargs.get('user', 'admin')
+        self.password = kwargs.get('password', 'admin')
+        self.db_name = kwargs.get('db_name', 'shading')
+
+        self._db_compose_file_name = None
+
+        self.running = False
+
+        self.keep_running = kwargs.get('keep_running', False)
+
+    @property
+    def workdir(self):
+
+        if self._workdir is None:
+            # check if directory exist, otherwise create
+            data_path = user_data_dir('PySimultanRadiation', 'TU_Wien')
+            workdir = Path(data_path, 'db', str(self.user))
+            workdir.mkdir(parents=True, exist_ok=True)
+            self._workdir = str(workdir)
+        return self._workdir
+
+    @property
+    def shared_dir(self):
+        if self._shared_dir is None:
+            self._shared_dir = tempfile.TemporaryDirectory()
+            time.sleep(1)
+        return self._shared_dir
+
+    @shared_dir.setter
+    def shared_dir(self, value):
+        self._shared_dir = value
+
+    @property
+    def db_compose_file_name(self):
+        if self._db_compose_file_name is None:
+            self._db_compose_file_name = os.path.join(self.shared_dir.name, 'db_docker_compose.yml')
+        return self._db_compose_file_name
+
+    @db_compose_file_name.setter
+    def db_compose_file_name(self, value):
+        self._db_compose_file_name = value
+
+    def write_db_compose_file(self, filename):
+
+        with open(db_compose_template_filename, 'r') as f:
+            compose_template = f.read()
+
+        compose_template = compose_template.replace('<DB_BIND_VOLUME>', str(self.workdir))
+        compose_template = compose_template.replace('<DB_PORT>', str(self.port))
+        compose_template = compose_template.replace('<UserDBName>', str(self.user))
+        compose_template = compose_template.replace('<UserDBPassword>', str(self.password))
+        compose_template = compose_template.replace('<DBName>', self.db_name)
+
+        with open(filename, 'wt') as f_out:
+            f_out.write(compose_template)
+
+    def shut_down_db_service(self):
+
+        folder_name = os.path.basename(os.path.normpath(self.shared_dir.name))
+        logger.info(f'Shutting down db compose {folder_name} on port {self.port}...')
+
+        cmd = config.docker_path + f" -f {self.db_compose_file_name} -p {folder_name} down --remove-orphans"
+        result = subprocess.run(cmd, capture_output=True, text=True, shell=True)
+        if result.returncode:
+            logger.error(f"Command Result: {result.stderr}")
+        else:
+            logger.debug(f"Command Result: {result.stderr}")
+            logger.info(f"Database service successfully shut down")
+
+            self.shared_dir.cleanup()
+            self.shared_dir = None
+            self.db_compose_file_name = None
+            self.running = False
+
+    def start_database_service(self):
+        logger.info(f"Starting database container on port: {self.port}...")
+        self.write_db_compose_file(self.db_compose_file_name)
+
+        cmd = config.docker_path + ' -f ' + self.db_compose_file_name + ' up' + ' -d'
+        result = subprocess.run(cmd, capture_output=True, text=True, shell=True)
+        if result.returncode:
+            logger.error(f"Command Result: {result.stderr}\nfor \n\n{cmd}")
+            self.shut_down_db_service()
+        else:
+            logger.debug(f"Command Result: {result.stderr}")
+            logger.info(f"Database service successfully started")
+            self.running = True
+
+        conn_ok = self.test_connection()
+        start_time = time.time()
+        while (not conn_ok) and ((time.time() - start_time) < 10):
+            conn_ok = self.test_connection()
+        if not conn_ok and ((time.time() - start_time) > 10):
+            raise Exception(f'Could not connect to database')
+
+    def __enter__(self):
+        if not self.running:
+            self.start_database_service()
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self.running and not self.keep_running:
+            self.shut_down_db_service()
+
+    def __del__(self):
+        if self.running:
+            self.shut_down_db_service()
+
+    def test_connection(self):
+
+        try:
+            conn = psycopg2.connect(dbname=self.db_name,
+                                    user=self.user,
+                                    host='localhost',
+                                    port=self.port,
+                                    password=self.password,
+                                    connect_timeout=1)
+            conn.close()
+            return True
+        except:
+            return False
 
 
 class ShadingService(object):
@@ -34,27 +168,10 @@ class ShadingService(object):
         self.log_dir = kwargs.get('log_dir', 'logs')
         self.logging_mode = kwargs.get('logging_mode', 'DEBUG')
 
-        self._db_dir = kwargs.get('db_dir', None)
-        self.db_port = kwargs.get('db_port', 5432)
-        self.user = kwargs.get('user', 'admin')
-        self.password = kwargs.get('password', 'admin')
-        self.db_name = kwargs.get('db_name', 'shading')
-
         self._shared_dir = None
         self._compose_file_name = None
 
         self.running = False
-
-    @property
-    def db_dir(self):
-
-        if self._db_dir is None:
-            # check if directory exist, otherwise create
-            data_path = user_data_dir('PySimultanRadiation', 'TU_Wien')
-            db_dir = Path(data_path, 'db', str(self.user))
-            db_dir.mkdir(parents=True, exist_ok=True)
-            self._db_dir = str(db_dir)
-        return self._db_dir
 
     @property
     def shared_dir(self):
@@ -96,11 +213,11 @@ class ShadingService(object):
         compose_template = compose_template.replace('<NUM_WORKERS>', str(self.num_workers))
 
         # database
-        compose_template = compose_template.replace('<DB_BIND_VOLUME>', str(self.db_dir))
-        compose_template = compose_template.replace('<DB_PORT>', str(self.db_port))
-        compose_template = compose_template.replace('<UserDBName>', str(self.user))
-        compose_template = compose_template.replace('<UserDBPassword>', str(self.password))
-        compose_template = compose_template.replace('<DBName>', self.db_name)
+        # compose_template = compose_template.replace('<DB_BIND_VOLUME>', str(self.db_dir))
+        # compose_template = compose_template.replace('<DB_PORT>', str(self.db_port))
+        # compose_template = compose_template.replace('<UserDBName>', str(self.user))
+        # compose_template = compose_template.replace('<UserDBPassword>', str(self.password))
+        # compose_template = compose_template.replace('<DBName>', self.db_name)
 
         with open(filename, 'wt') as f_out:
             f_out.write(compose_template)
@@ -111,7 +228,7 @@ class ShadingService(object):
         self.write_compose_file(self.compose_file_name)
 
         cmd = config.docker_path + ' -f ' + self.compose_file_name + ' up -d'
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        result = subprocess.run(cmd, capture_output=True, text=True, shell=True)
         if result.returncode:
             logger.error(f"Command Result: {result.stderr}\nfor \n\n{cmd}")
             self.shut_down_service()
@@ -123,10 +240,10 @@ class ShadingService(object):
     def shut_down_service(self):
 
         folder_name = os.path.basename(os.path.normpath(self.shared_dir.name))
-        logger.info(f'Shutting down compose {folder_name} on port {self.frontend_port}...')
+        logger.info(f'Shutting down shading compose {folder_name} on port {self.frontend_port}...')
 
         cmd = config.docker_path + f' -f {self.compose_file_name} -p {folder_name} down --remove-orphans'
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        result = subprocess.run(cmd, capture_output=True, text=True, shell=True)
         if result.returncode:
             logger.error(f"Command Result: {result.stderr}")
         else:
@@ -139,6 +256,7 @@ class ShadingService(object):
             self.compose_file_name = None
 
     def __enter__(self):
+
         if not self.running:
             self.start_service()
 

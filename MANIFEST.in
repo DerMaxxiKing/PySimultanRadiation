@@ -3,3 +3,5 @@ include LICENSE.txt
 include requirements.txt
 recursive-exclude tests *
 include caushi.py
+graft src/PYSimultanRadiation/docker/resources
+graft src/PYSimultanRadiation/resources

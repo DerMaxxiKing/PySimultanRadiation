@@ -272,8 +272,11 @@ class Scene(object):
 
     def add_mesh_properties(self, mesh=None):
 
-        tri_mesh = Trimesh(vertices=mesh.points,
-                           faces=mesh.cells_dict['triangle'])
+        try:
+            tri_mesh = Trimesh(vertices=mesh.points,
+                               faces=mesh.cells_dict['triangle'])
+        except Exception as e:
+            raise e
 
         logger.info(f'Scene: {self.name}; {self.id}: adding properties to surface mesh...')
 

@@ -12,3 +12,8 @@ appdirs
 sqlalchemy
 Psycopg2
 openpyxl
+pvlib
+zmq
+service_tools
+networkx
+shapely

@@ -3,7 +3,7 @@ import numpy as np
 import pvlib
 import trimesh
 import meshio
-from src.PYSimultanRadiation.client.client import Client
+from ..client.client import Client
 
 from copy import copy
 import pickle
