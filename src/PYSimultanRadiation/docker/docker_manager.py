@@ -110,7 +110,7 @@ class DatabaseService(object):
         logger.info(f"Starting database container on port: {self.port}...")
         self.write_db_compose_file(self.db_compose_file_name)
 
-        cmd = config.docker_path + ' -f ' + self.db_compose_file_name + ' up' + ' -d'
+        cmd = config.docker_path + ' -f ' + '\"' + self.db_compose_file_name + '\"' + ' up' + ' -d'
         result = subprocess.run(cmd, capture_output=True, text=True, shell=True)
         if result.returncode:
             logger.error(f"Command Result: {result.stderr}\nfor \n\n{cmd}")
