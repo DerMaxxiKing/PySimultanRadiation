@@ -18,3 +18,4 @@ service_tools
 networkx
 shapely
 opencv-python
+docker
