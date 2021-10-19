@@ -172,13 +172,16 @@ class ShadingAnalysis(object):
     @property
     def db_service(self):
         if self._db_service is None:
+            serv_work_workdir = os.path.join(self.setup_component.ExportDirectory, 'serv_work_workdir')
             port = next_free_port(port=9006, max_port=65535)
             logger.debug(f'database port is {port}')
 
             self._db_service = DatabaseService(port=port,
                                                user=self.user_name,
                                                password=self.password,
-                                               db_name=self.db_name)
+                                               db_name=self.db_name,
+                                               log_dir=os.path.join(serv_work_workdir, 'logs'),
+                                               logging_mode=self.setup_component.LogLevel)
         return self._db_service
 
     @db_service.setter
@@ -1252,10 +1255,13 @@ class RTEngine(object):
 
         if irradiation_vector[2] < 0:
             rt_start_time = time.time()
-            count = self.client.rt_sun_window(scene='hull',
-                                              sun_window=sun_window,
-                                              sample_dist=self.sample_dist,
-                                              irradiation_vector=irradiation_vector)
+            try:
+                count = self.client.rt_sun_window(scene='hull',
+                                                  sun_window=sun_window,
+                                                  sample_dist=self.sample_dist,
+                                                  irradiation_vector=irradiation_vector)
+            except Exception as e:
+                logger.error(f'Error calling shading service:\n{e}')
 
             f_sh[0:count.shape[0]] = count
             rt_end_time = time.time()

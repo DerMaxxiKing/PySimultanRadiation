@@ -1,3 +1,5 @@
+import uuid
+
 from . import logger
 import tempfile
 from ..config import config
@@ -7,6 +9,7 @@ from appdirs import user_data_dir
 from pathlib import Path
 import os
 import psycopg2
+import docker
 
 try:
     import importlib.resources as pkg_resources
@@ -16,12 +19,16 @@ except ImportError:
 
 
 from . import resources
+from .resources import database
 
 with pkg_resources.path(resources, 'docker-compose_shading.yml') as r_path:
     compose_template_filename = str(r_path)
 
 with pkg_resources.path(resources, 'docker-compose_db.yml') as r_path:
     db_compose_template_filename = str(r_path)
+
+with pkg_resources.path(database, '') as r_path:
+    db_path = str(r_path)
 
 
 class DatabaseService(object):
@@ -36,18 +43,37 @@ class DatabaseService(object):
         self.password = kwargs.get('password', 'admin')
         self.db_name = kwargs.get('db_name', 'shading')
 
+        self.log_dir = kwargs.get('log_dir', 'logs')
+        self.logging_mode = kwargs.get('logging_mode', 'DEBUG')
+
         self._db_compose_file_name = None
 
         self.running = False
 
         self.keep_running = kwargs.get('keep_running', False)
 
+        self._volume = None
+        self.docker_client = docker.from_env()
+
+    @property
+    def volume(self):
+        if self._volume is None:
+            volume = next((x for x in self.docker_client.volumes.list() if x.name == self.user), None)
+            if volume is None:
+                logger.info(f'Creating database volume...')
+                self._volume = self.docker_client.volumes.create(name=self.user, driver='local')
+                logger.info(f'Created database volume {self._volume.name}')
+            else:
+                self._volume = volume
+        return self._volume
+
     @property
     def workdir(self):
 
         if self._workdir is None:
             # check if directory exist, otherwise create
-            data_path = user_data_dir('PySimultanRadiation', 'TU_Wien')
+            # data_path = user_data_dir('PySimultanRadiation', 'TU_Wien')
+            data_path = db_path
             workdir = Path(data_path, 'db', str(self.user))
             workdir.mkdir(parents=True, exist_ok=True)
             self._workdir = str(workdir)
@@ -79,7 +105,7 @@ class DatabaseService(object):
         with open(db_compose_template_filename, 'r') as f:
             compose_template = f.read()
 
-        compose_template = compose_template.replace('<DB_BIND_VOLUME>', str(self.workdir))
+        compose_template = compose_template.replace('<DB_BIND_VOLUME>', self.volume.name)
         compose_template = compose_template.replace('<DB_PORT>', str(self.port))
         compose_template = compose_template.replace('<UserDBName>', str(self.user))
         compose_template = compose_template.replace('<UserDBPassword>', str(self.password))
@@ -93,7 +119,7 @@ class DatabaseService(object):
         folder_name = os.path.basename(os.path.normpath(self.shared_dir.name))
         logger.info(f'Shutting down db compose {folder_name} on port {self.port}...')
 
-        cmd = config.docker_path + f" -f {self.db_compose_file_name} -p {folder_name} down --remove-orphans"
+        cmd = config.docker_path + ' compose ' + f" -f {self.db_compose_file_name} -p {folder_name} down --remove-orphans"
         result = subprocess.run(cmd, capture_output=True, text=True, shell=True)
         if result.returncode:
             logger.error(f"Command Result: {result.stderr}")
@@ -110,8 +136,12 @@ class DatabaseService(object):
         logger.info(f"Starting database container on port: {self.port}...")
         self.write_db_compose_file(self.db_compose_file_name)
 
-        cmd = config.docker_path + ' -f ' + '\"' + self.db_compose_file_name + '\"' + ' up' + ' -d'
-        result = subprocess.run(cmd, capture_output=True, text=True, shell=True)
+        annot_mark = '\"'
+        cmd = config.docker_path + ' compose ' + "-f " + f"{annot_mark}{self.db_compose_file_name}{annot_mark}" + " up" + " -d"
+        result = subprocess.run(cmd,
+                                capture_output=True,
+                                text=True,
+                                shell=True)
         if result.returncode:
             logger.error(f"Command Result: {result.stderr}\nfor \n\n{cmd}")
             self.shut_down_db_service()
@@ -173,6 +203,17 @@ class ShadingService(object):
 
         self.running = False
 
+        self._volume = None
+        self.docker_client = docker.from_env()
+
+    @property
+    def volume(self):
+        if self._volume is None:
+            logger.info(f'Creating client volume...')
+            self._volume = self.docker_client.volumes.create(name=str(uuid.uuid4()), driver='local')
+            logger.info(f'Created client volume {self._volume.name}')
+        return self._volume
+
     @property
     def shared_dir(self):
         if self._shared_dir is None:
@@ -206,7 +247,7 @@ class ShadingService(object):
         compose_template = compose_template.replace('<LOG_DIR>', self.log_dir)
         compose_template = compose_template.replace('<SERVER_LOG_MODE>', self.logging_mode)
 
-        compose_template = compose_template.replace('<BIND_VOLUME>', self.workdir)
+        compose_template = compose_template.replace('<BIND_VOLUME>', self.volume.name)
 
         compose_template = compose_template.replace('<WORKER_LOG_MODE>', self.logging_mode)
 
@@ -227,7 +268,7 @@ class ShadingService(object):
         logger.info(f"Starting shading service with {self.num_workers} workers on port: {self.frontend_port}...")
         self.write_compose_file(self.compose_file_name)
 
-        cmd = config.docker_path + ' -f ' + self.compose_file_name + ' up -d'
+        cmd = config.docker_path + ' compose ' + '-f ' + self.compose_file_name + ' up -d'
         result = subprocess.run(cmd, capture_output=True, text=True, shell=True)
         if result.returncode:
             logger.error(f"Command Result: {result.stderr}\nfor \n\n{cmd}")
@@ -242,7 +283,7 @@ class ShadingService(object):
         folder_name = os.path.basename(os.path.normpath(self.shared_dir.name))
         logger.info(f'Shutting down shading compose {folder_name} on port {self.frontend_port}...')
 
-        cmd = config.docker_path + f' -f {self.compose_file_name} -p {folder_name} down --remove-orphans'
+        cmd = config.docker_path + ' compose ' + f'-f {self.compose_file_name} -p {folder_name} down --remove-orphans'
         result = subprocess.run(cmd, capture_output=True, text=True, shell=True)
         if result.returncode:
             logger.error(f"Command Result: {result.stderr}")
@@ -254,6 +295,14 @@ class ShadingService(object):
             self.shared_dir.cleanup()
             self.shared_dir = None
             self.compose_file_name = None
+
+        if self.volume is not None:
+            logger.info(f'Removing volume {self.volume.name}')
+            try:
+                self.volume.remove()
+                logger.info(f'Volume removed')
+            except Exception as e:
+                logger.error(f'Error removing volume {self.volume.name}:\n{e}')
 
     def __enter__(self):
 

@@ -10,24 +10,29 @@ class ConfigCls(object):
         self.default_mesh_size = 10
         self._docker_path = None
 
+        self.log_docker_compose_file = kwargs.get('lock_docker_compose_file', True)
+
     @property
     def docker_path(self):
+
         if self._docker_path is None:
-            if os.path.isfile(r'C:\Program Files\Docker\Docker\resources\bin\docker-compose.exe'):
-                self._docker_path = '\"' + r'C:\Program Files\Docker\Docker\resources\bin\docker-compose.exe' + '\"'
+            # self._docker_path = '"C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker-compose.exe"'
+
+            if os.path.isfile('C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe'):
+                self._docker_path = '"C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe"'
             else:
-                process = subprocess.run('where docker-compose', capture_output=True, text=True, universal_newlines=True)
+                process = subprocess.run('where docker', capture_output=True, text=True, universal_newlines=True)
                 for line in process.stdout.splitlines():
-                    if os.path.basename(line) == 'docker-compose.exe':
+                    if os.path.basename(line) == 'docker.exe':
                         self._docker_path = line
                         break
                 if self._docker_path in ['', None]:
-                    logger.warn(f'Could not find docker-compose path. Please select manually:')
-                    self._docker_path = '\"' + fd.askopenfilename(title='Select docker-compose.exe',
-                                                           filetypes=[("docker-compose.exe", ".exe")]
+                    logger.warn(f'Could not find docker.exe. Please select manually:')
+                    self._docker_path = '\"' + fd.askopenfilename(title='Select docker.exe',
+                                                           filetypes=[("docker.exe", ".exe")]
                                                            ) + '\"'
                 if self._docker_path in ['', None]:
-                    logger.error(f'No docker-compose path selected')
+                    logger.error(f'No docker path selected')
         return self._docker_path
 
 
