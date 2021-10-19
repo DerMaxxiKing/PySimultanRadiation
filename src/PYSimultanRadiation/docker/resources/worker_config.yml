@@ -1,0 +1,7 @@
+!WorkerConfig
+id: c33d368f-f423-4db6-a1e4-6ec52d7f8c15
+name: zmq_server
+ip: 0.0.0.0
+port: 9006
+log_dir:
+logging_mode:

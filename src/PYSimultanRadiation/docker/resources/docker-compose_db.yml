@@ -1,0 +1,18 @@
+version: '2'
+services:
+    shading_db:
+        image: postgres:latest
+        container_name: postgres_db_container
+        restart: always
+        ports:
+            - "<DB_PORT>:5432"
+        volumes:
+            - <DB_BIND_VOLUME>:/var/lib/postgresql/data
+        environment:
+            POSTGRES_USER: <UserDBName>
+            POSTGRES_PASSWORD: <UserDBPassword>
+            POSTGRES_DB: <DBName>
+
+volumes:
+    <DB_BIND_VOLUME>:
+      external: true

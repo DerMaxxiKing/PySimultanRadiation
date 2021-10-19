@@ -12,6 +12,6 @@ dist
 .pytest_cache
 .mypy_cache
 build
-resources
 results
 test
+/resources/

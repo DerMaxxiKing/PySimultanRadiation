@@ -1,0 +1,25 @@
+- !Template
+  template_name: ShadingAnalysis
+  template_id: '1'
+  inherits_from:
+  content: [EndDate, MeshSize, NorthAngle, RayResolution, ExportDirectory, StartDate,
+    TerrainHeight, FacesOfInterest, Weather, GeometryModel, NumTimesteps, TimestepSize,
+    TimestepUnit, AddTerrain, NumWorkers, WriteVTK, LogLevel, WriteXLSX]
+  documentation: ''
+  units: {}
+  types: {EndDate: str, MeshSize: float, NorthAngle: float, RayResolution: float,
+    ExportDirectory: str, StartDate: str, TerrainHeight: float, TimestepUnit: str,
+    TimestepSize: float, AddTerrain: bool, NumTimesteps: float, NumWorkers: int, WriteVTK: bool,
+    LogLevel: str, WriteXLSX: bool}
+  slots: {FacesOfInterest: Undefined Slot_00, Weather: Undefined Slot_01}
+  synonyms: {}
+- !Template
+  template_name: FOIS
+  template_id: '3'
+  inherits_from: ReferenceList
+  content: ['']
+  documentation: ''
+  units: {}
+  types: {}
+  slots: {}
+  synonyms: {}

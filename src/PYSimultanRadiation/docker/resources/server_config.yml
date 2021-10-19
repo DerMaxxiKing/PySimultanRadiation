@@ -1,0 +1,11 @@
+!ServerConfig
+id: 2ebbabb5-a38f-4b6c-beff-3851bac182d8
+name: zmq_server
+secure: false
+public_keys_dir:
+secret_keys_dir:
+ip: 0.0.0.0
+port: 8006
+backend_port: 9006
+log_dir: /logs
+logging_mode: INFO

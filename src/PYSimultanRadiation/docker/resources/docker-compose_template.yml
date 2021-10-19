@@ -1,0 +1,61 @@
+version: '2'
+services:
+    zmq_server:
+        image: "maxxiking/zmq_server:1.0.3"
+        ports:
+            - "<port>:<FRONTEND_PORT>"
+        environment:
+            FROM_CONFIG: 0
+            SECURE: 0
+            IP: 0.0.0.0
+            FRONTEND_PORT: <FRONTEND_PORT>
+            BACKEND_PORT: <BACKEND_PORT>
+            LOG_DIR: <LOG_DIR>
+            LOGGING_MODE: <SERVER_LOG_MODE>
+        depends_on:
+            db_postgres:
+                condition: service_healthy
+        volumes:
+            - <BIND_VOLUME>:/workdir
+        networks:
+            - shading_network
+
+    shading_worker:
+        image: "maxxiking/shading_worker:1.0.2"
+        environment:
+            FROM_CONFIG: 0
+            IP: zmq_server
+            SERVER_PORT: <BACKEND_PORT>
+            LOG_DIR: logs
+            LOGGING_MODE: <WORKER_LOG_MODE>
+        volumes:
+            - <BIND_VOLUME>:/workdir
+        networks:
+            - shading_network
+        depends_on:
+            - zmq_server
+        deploy:
+            mode: replicated
+            replicas: <NUM_WORKERS>
+
+    db_postgres:
+        image: postgres:latest
+        container_name: postgres_db_container
+        ports:
+            - "<DB_PORT>:5432"
+        volumes:
+            - <DB_BIND_VOLUME>:/var/lib/postgresql/data
+        environment:
+            POSTGRES_USER: <UserDBName>
+            POSTGRES_PASSWORD: <UserDBPassword>
+            POSTGRES_DB: <DBName>
+        healthcheck:
+            test: [ "CMD-SHELL", "pg_isready -U <UserDBName>" ]
+            interval: 2s
+            timeout: 2s
+            retries: 5
+
+networks:
+  shading_network:
+        name: prod_shading_network
+        driver: bridge
