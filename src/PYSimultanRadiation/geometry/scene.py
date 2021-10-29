@@ -326,14 +326,14 @@ class Scene(object):
 
             foi[cell_ids] = int(face.foi)
 
-            room1 = face.side1
+            room1 = face.side_1_volume
             if room1 is not None:
                 if room1 not in room_ids.keys():
                     room_ids[room1] = room_id
                     room_id += 1
                 side1_zone[cell_ids] = room_ids[room1]
 
-            room2 = face.side2
+            room2 = face.side_2_volume
             if room2 is not None:
                 if room2 not in room_ids.keys():
                     room_ids[room2] = room_id
@@ -403,22 +403,22 @@ class Scene(object):
 
         logger.info(f'Scene: {self.name}; {self.id}: creating topology')
 
-        faces = copy(self.faces)
-        [faces.extend(x.faces) for x in self.volumes]
-        occurrences = Counter(faces)
-
-        hull_faces = [k for (k, v) in occurrences.items() if v in [1, 2]]
-        inside_faces = [k for (k, v) in occurrences.items() if v == 3]
-        # no_occurance = [k for (k, v) in occurrences.items() if v == 1]
-        # np.array([x.hull_face for x in self.faces])
-
-        for face in hull_faces:
-            face.hull_face = True
-            face.internal_face = True
-
-        for face in inside_faces:
-            face.internal_face = True
-            face.hull_face = False
+        # faces = copy(self.faces)
+        # [faces.extend(x.faces) for x in self.volumes]
+        # occurrences = Counter(faces)
+        #
+        # hull_faces = [k for (k, v) in occurrences.items() if v in [1, 2]]
+        # inside_faces = [k for (k, v) in occurrences.items() if v == 3]
+        # # no_occurance = [k for (k, v) in occurrences.items() if v == 1]
+        # # np.array([x.hull_face for x in self.faces])
+        #
+        # for face in hull_faces:
+        #     face.hull_face = True
+        #     face.internal_face = True
+        #
+        # for face in inside_faces:
+        #     face.internal_face = True
+        #     face.hull_face = False
 
         self.topo_done = True
 
@@ -431,24 +431,24 @@ class Scene(object):
 
         logger.info(f'Scene: {self.name}; {self.id}: creating face-side topology')
 
-        for volume in self.volumes:
-            if not volume.is_watertight:
-                logger.error(f'{self.name}, {self.id}: Volume is not watertight')
-
-            if not volume.is_watertight:
-                trimesh.repair.fix_winding(volume.surface_trimesh)
-
-            surface_normals = np.array([x.normal for x in volume.faces])
-            first_cell_ids = [volume.surface_mesh.cell_sets[str(x.id)][1][0] for x in volume.faces]
-            origins = volume.surface_trimesh.triangles_center[first_cell_ids, :]
-
-            inside = volume.surface_trimesh.contains(origins + 0.05 * surface_normals)
-
-            for i, face in enumerate(volume.faces):
-                if inside[i]:
-                    face.side2 = volume
-                else:
-                    face.side1 = volume
+        # for volume in self.volumes:
+        #     if not volume.is_watertight:
+        #         logger.error(f'{self.name}, {self.id}: Volume is not watertight')
+        #
+        #     if not volume.is_watertight:
+        #         trimesh.repair.fix_winding(volume.surface_trimesh)
+        #
+        #     surface_normals = np.array([x.normal for x in volume.faces])
+        #     first_cell_ids = [volume.surface_mesh.cell_sets[str(x.id)][1][0] for x in volume.faces]
+        #     origins = volume.surface_trimesh.triangles_center[first_cell_ids, :]
+        #
+        #     inside = volume.surface_trimesh.contains(origins + 0.05 * surface_normals)
+        #
+        #     for i, face in enumerate(volume.faces):
+        #         if inside[i]:
+        #             face.side2 = volume
+        #         else:
+        #             face.side1 = volume
 
         self.face_side_topo_done = True
 

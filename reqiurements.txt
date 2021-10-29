@@ -19,3 +19,4 @@ networkx
 shapely
 opencv-python
 docker
+guid

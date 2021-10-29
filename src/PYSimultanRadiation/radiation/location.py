@@ -8,12 +8,25 @@ class Location():
     def __init__(self, *args, **kwargs):
 
         file_name = kwargs.get('file_name')
+
+        self.setup_component = kwargs.get('setup_component', None)
         self.north_angle = kwargs.get('north_angle', 0)
 
         self.data, self.metadata = pvlib.iotools.read_epw(file_name,
                                                           coerce_year=2021)
 
         self.location = pvlib.location.Location.from_epw(self.metadata)
+
+        if self.setup_component.FromWeatherFile:
+            self.location = pvlib.location.Location.from_epw(self.metadata)
+        else:
+            self.location = pvlib.location.Location(latitude=self.setup_component.Latitude,
+                                                    longitude=self.setup_component.Longitude,
+                                                    altitude=self.setup_component.Altitude,
+                                                    tz=self.setup_component.Timezone,
+                                                    name=self.setup_component.Name)
+
+        print('done')
 
     def generate_irradiation_vector(self, time):
 

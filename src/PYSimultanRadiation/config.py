@@ -10,7 +10,7 @@ class ConfigCls(object):
         self.default_mesh_size = 10
         self._docker_path = None
 
-        self.log_docker_compose_file = kwargs.get('lock_docker_compose_file', True)
+        self.clean_up = True    # clean all docker volumes after run
 
     @property
     def docker_path(self):

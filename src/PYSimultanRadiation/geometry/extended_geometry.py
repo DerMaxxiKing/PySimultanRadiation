@@ -70,7 +70,7 @@ class FaceExt(object):
         self._vertices = None
 
         self.mesh_size = kwargs.get('mesh_size', config.default_mesh_size)
-        self.hull_face = kwargs.get('hull_face', True)
+        # self.hull_face = kwargs.get('hull_face', True)
         self.internal_face = kwargs.get('internal_face', True)
 
         self.side1 = kwargs.get('side1', None)

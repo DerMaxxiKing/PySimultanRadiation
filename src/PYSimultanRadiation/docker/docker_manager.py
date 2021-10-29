@@ -10,6 +10,7 @@ from pathlib import Path
 import os
 import psycopg2
 import docker
+from sqlalchemy import create_engine
 
 try:
     import importlib.resources as pkg_resources
@@ -19,7 +20,6 @@ except ImportError:
 
 
 from . import resources
-from .resources import database
 
 with pkg_resources.path(resources, 'docker-compose_shading.yml') as r_path:
     compose_template_filename = str(r_path)
@@ -27,16 +27,14 @@ with pkg_resources.path(resources, 'docker-compose_shading.yml') as r_path:
 with pkg_resources.path(resources, 'docker-compose_db.yml') as r_path:
     db_compose_template_filename = str(r_path)
 
-with pkg_resources.path(database, '') as r_path:
-    db_path = str(r_path)
-
 
 class DatabaseService(object):
 
     def __init__(self, *args, **kwargs):
 
         self._shared_dir = None
-        self._workdir = kwargs.get('workdir', None)
+        self._engine = None
+        # self._workdir = kwargs.get('workdir', None)
 
         self.port = kwargs.get('port', 9006)
         self.user = kwargs.get('user', 'admin')
@@ -54,6 +52,16 @@ class DatabaseService(object):
 
         self._volume = None
         self.docker_client = docker.from_env()
+        self.persist_volume = kwargs.get('persist_volume', False)
+
+    @property
+    def engine(self):
+        if self._engine is None:
+            engine = create_engine(
+                f'postgresql://{self.user}:{self.password}@localhost:{self.port}/{self.db_name}')
+            engine.dispose()
+            self._engine = engine
+        return self._engine
 
     @property
     def volume(self):
@@ -67,17 +75,21 @@ class DatabaseService(object):
                 self._volume = volume
         return self._volume
 
-    @property
-    def workdir(self):
+    @volume.setter
+    def volume(self, value):
+        self._volume = value
 
-        if self._workdir is None:
-            # check if directory exist, otherwise create
-            # data_path = user_data_dir('PySimultanRadiation', 'TU_Wien')
-            data_path = db_path
-            workdir = Path(data_path, 'db', str(self.user))
-            workdir.mkdir(parents=True, exist_ok=True)
-            self._workdir = str(workdir)
-        return self._workdir
+    # @property
+    # def workdir(self):
+    #
+    #     if self._workdir is None:
+    #         # check if directory exist, otherwise create
+    #         # data_path = user_data_dir('PySimultanRadiation', 'TU_Wien')
+    #         data_path = db_path
+    #         workdir = Path(data_path, 'db', str(self.user))
+    #         workdir.mkdir(parents=True, exist_ok=True)
+    #         self._workdir = str(workdir)
+    #     return self._workdir
 
     @property
     def shared_dir(self):
@@ -132,6 +144,12 @@ class DatabaseService(object):
             self.db_compose_file_name = None
             self.running = False
 
+        if not self.persist_volume:
+            if self.volume is not None:
+                logger.info(f'Removing volume {self.volume.name}')
+                self.volume.remove()
+                self.volume = None
+
     def start_database_service(self):
         logger.info(f"Starting database container on port: {self.port}...")
         self.write_db_compose_file(self.db_compose_file_name)
@@ -172,16 +190,25 @@ class DatabaseService(object):
     def test_connection(self):
 
         try:
-            conn = psycopg2.connect(dbname=self.db_name,
-                                    user=self.user,
-                                    host='localhost',
-                                    port=self.port,
-                                    password=self.password,
-                                    connect_timeout=1)
+            conn = self.get_connection({'connect_timeout': 1})
+            # conn = psycopg2.connect(dbname=self.db_name,
+            #                         user=self.user,
+            #                         host='localhost',
+            #                         port=self.port,
+            #                         password=self.password,
+            #                         connect_timeout=1)
             conn.close()
             return True
         except:
             return False
+
+    def get_connection(self, kwargs):
+        conn = psycopg2.connect(dbname=self.db_name,
+                                user=self.user,
+                                host='localhost',
+                                port=self.port,
+                                password=self.password, **kwargs)
+        return conn
 
 
 class ShadingService(object):
@@ -189,7 +216,7 @@ class ShadingService(object):
     def __init__(self, *args, **kwargs):
 
         self.port = kwargs.get('port')
-        self.workdir = kwargs.get('workdir')
+        # self.workdir = kwargs.get('workdir')
         self.num_workers = kwargs.get('num_workers')
 
         self.frontend_port = kwargs.get('frontend_port', 8006)
@@ -213,6 +240,10 @@ class ShadingService(object):
             self._volume = self.docker_client.volumes.create(name=str(uuid.uuid4()), driver='local')
             logger.info(f'Created client volume {self._volume.name}')
         return self._volume
+
+    @volume.setter
+    def volume(self, value):
+        self._volume = value
 
     @property
     def shared_dir(self):
@@ -300,6 +331,7 @@ class ShadingService(object):
             logger.info(f'Removing volume {self.volume.name}')
             try:
                 self.volume.remove()
+                self.volume = None
                 logger.info(f'Volume removed')
             except Exception as e:
                 logger.error(f'Error removing volume {self.volume.name}:\n{e}')

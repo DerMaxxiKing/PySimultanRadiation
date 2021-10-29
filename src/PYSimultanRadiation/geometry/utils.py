@@ -517,3 +517,13 @@ def simplify_path(vertices, points):
 def cell_data_to_point_data(mesh):
 
     pass
+
+
+def angle(v1, v2, acute='False'):
+    # v1 first vector
+    # v2 second vector
+    angle = np.arccos(np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2)))
+    if (acute == True):
+        return angle
+    else:
+        return 2 * np.pi - angle

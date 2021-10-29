@@ -1,0 +1,11 @@
+- !Template
+  template_name: ShadingAnalysis
+  template_id: '1'
+  inherits_from:
+  content: [geometry, location, results, run_configuration, simulation_setup, Active]
+  documentation:
+  units: {}
+  types: {}
+  slots: {geometry: Element_01, location: Element_02, results: Element_03, run_configuration: Element_04,
+    simulation_setup: Element_05}
+  synonyms: {}
