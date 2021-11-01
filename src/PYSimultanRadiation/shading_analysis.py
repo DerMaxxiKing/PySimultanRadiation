@@ -444,7 +444,7 @@ class ShadingAnalysis(object):
                 except Exception as e:
                     logger.error(f'Error reading mesh from database:\n{e}\n{traceback.format_exc()}\n{sys.exc_info()[2]}')
                 if isinstance(mesh, meshio.Mesh):
-                    logger.info(f'Found mesh: Triangles: {mesh}')
+                    logger.info(f'Found mesh')
                     self._mesh = mesh
                 else:
                     self._mesh = self.generate_mesh()
@@ -578,15 +578,17 @@ class ShadingAnalysis(object):
                 face.foi = True
 
     def run(self):
-        if self.setup_component.run_configuration.RunShadingFactorCalculation:
-            self.run_shading_analysis()
-            self.export_results()
+        self.db_service.keep_running = True
+        with self.db_service:
+            if self.setup_component.run_configuration.RunShadingFactorCalculation:
+                self.run_shading_analysis()
+                self.export_results()
+        self.db_service.shut_down_db_service()
 
     def run_shading_analysis(self):
 
         logger.info(f'Starting shading analysis {self.id}...')
 
-        self.db_service.keep_running = True
         with self.db_service:
 
             engine = create_engine(
@@ -605,7 +607,7 @@ class ShadingAnalysis(object):
             aois = irradiation_vector.apply(calc_aoi, args=(face_normals, ), axis=1, result_type='expand')
             aois.columns = face_ids
             try:
-                self.db_interface.save_dataframe(aois, 'angle of incidence')
+                self.db_interface.save_dataframe(aois, 'aoi')
             except Exception as e:
                 logger.error(f"Error writing 'angle of incidence' to database:\n{e}\n{traceback.format_exc()}\n{sys.exc_info()[2]}")
 
@@ -1129,7 +1131,7 @@ class ShadingAnalysis(object):
         if not any([self.setup_component.run_configuration.WriteVTK, self.setup_component.run_configuration.WriteXLSX]):
             return
 
-        self.db_service.keep_running = False
+        # self.db_service.keep_running = False
         export_directory = self.setup_component.run_configuration.ExportDirectory
 
         # if not any([self.setup_component.run_configuration.WriteVTK, self.setup_component.run_configuration.WriteXLSX]):
@@ -1392,7 +1394,7 @@ class ShadingAnalysis(object):
 
                     workbook = writer.book
 
-                    if result_export.WriteSummary:
+                    if bool(result_export.WriteSummary):
 
                         logger.info(f'Writing xlsx summary')
 
@@ -1423,7 +1425,7 @@ class ShadingAnalysis(object):
                         writer.save()
 
                     # write irradiation vectors
-                    if result_export.WriteIrradiationVectors:
+                    if bool(result_export.WriteIrradiationVectors):
                         logger.info(f'Writing xlsx irradiation vectors')
                         if base_df is None:
                             base_df = self.db_interface.get_dataframe('base_df')
@@ -1442,10 +1444,10 @@ class ShadingAnalysis(object):
                         writer.save()
 
                     # angle of incidence
-                    if result_export.WriteAngleOfIncidence:
+                    if bool(result_export.WriteAngleOfIncidence):
                         logger.info(f'Writing xlsx AngleOfIncidence')
                         if aois is None:
-                            aois = self.db_interface.get_dataframe('AngleOfIncidence')
+                            aois = self.db_interface.get_dataframe('aoi')
                         write_face_results(aois,
                                            'AngleOfIncidence',
                                            writer,
@@ -1453,7 +1455,7 @@ class ShadingAnalysis(object):
                                            self.geo_model.FaceCls)
 
                     # write face_f_sh
-                    if result_export.WriteShadingFactors:
+                    if bool(result_export.WriteShadingFactors):
                         logger.info(f'Writing xlsx Shading Factors')
                         if face_f_sh is None:
                             face_f_sh = self.db_interface.get_dataframe('face_f_sh')
@@ -1464,16 +1466,16 @@ class ShadingAnalysis(object):
                                            self.geo_model.FaceCls)
 
                     # write face_f_sh_mean
-                    if result_export.WriteMeanShadingFactors:
+                    if bool(result_export.WriteMeanShadingFactors):
                         logger.info(f'Writing xlsx MeanShadingFactors')
-                        write_face_results(face_f_sh.mean(axis=0),
+                        write_face_results(face_f_sh.mean(axis=0).to_frame().T,
                                            'MeanShadingFactors',
                                            writer,
                                            workbook,
                                            self.geo_model.FaceCls)
 
                     # write face_solar_irradiation q_dot
-                    if result_export.WriteMeanShadingFactors:
+                    if bool(result_export.WriteMeanShadingFactors):
 
                         logger.info(f'Writing xlsx Specific Irradiation')
                         if face_q_dot is None:
@@ -1485,7 +1487,7 @@ class ShadingAnalysis(object):
                                            self.geo_model.FaceCls)
 
                     # write face_solar_irradiation Q_dot
-                    if result_export.WriteAbsoluteIrradiation:
+                    if bool(result_export.WriteAbsoluteIrradiation):
                         logger.info(f'Writing xlsx AbsoluteIrradiation')
                         if face_q_tot_dot is None:
                             face_q_tot_dot = self.db_interface.get_dataframe('face_q_tot_dot')
@@ -1496,7 +1498,7 @@ class ShadingAnalysis(object):
                                            self.geo_model.FaceCls)
 
                     # write face_solar_irradiation Q
-                    if result_export.WriteIrradiatedAmountOfHeat:
+                    if bool(result_export.WriteIrradiatedAmountOfHeat):
                         logger.info(f'Writing xlsx IrradiatedAmountOfHeat')
                         if face_Q is None:
                             face_Q = self.db_interface.get_dataframe('face_Q')
@@ -1614,7 +1616,7 @@ class RTEngine(object):
 
         self.client = None
         self.db_engine = None
-        self.conn = None
+        # self.conn = None
 
         self.port = kwargs.get('port')
         # self.db_engine = kwargs.get('db_engine')
@@ -1640,8 +1642,8 @@ class RTEngine(object):
         if self.client is None:
             self.client = Client(ip=f'tcp://localhost:{self.port}')
 
-        if self.conn is None:
-            self.conn = self.engine.connect()
+        # if self.conn is None:
+        #     self.conn = self.engine.connect()
 
         irradiation_vector = df_row['irradiation_vector']
         sun_window = df_row['windows']
@@ -1669,7 +1671,8 @@ class RTEngine(object):
         ins = self.f_sh_table.insert().values(date=date,
                                               irradiation_vector=irradiation_vector.tolist(),
                                               f_sh=f_sh.tolist())
-        result = self.conn.execute(ins)
+        with self.engine.connect() as conn:
+            result = conn.execute(ins)
 
         # # logger.info(f'writing results for timestep: {date}')
         # df0.to_sql(self.tablename,
@@ -1681,6 +1684,7 @@ class RTEngine(object):
         #                   'f_sh': postgresql.ARRAY(sqlalchemy.types.FLOAT)
         #                   }
         #            )
+
 
 
 def calc_timestep_async(port=None,

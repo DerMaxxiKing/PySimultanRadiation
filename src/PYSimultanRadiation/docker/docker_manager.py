@@ -58,7 +58,8 @@ class DatabaseService(object):
     def engine(self):
         if self._engine is None:
             engine = create_engine(
-                f'postgresql://{self.user}:{self.password}@localhost:{self.port}/{self.db_name}')
+                f'postgresql://{self.user}:{self.password}@localhost:{self.port}/{self.db_name}',
+                pool_pre_ping=True)
             engine.dispose()
             self._engine = engine
         return self._engine

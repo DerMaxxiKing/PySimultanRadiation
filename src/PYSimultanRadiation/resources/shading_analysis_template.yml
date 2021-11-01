@@ -58,15 +58,27 @@
   template_id: '6'
   inherits_from:
   content: [MeshSize, NumTimesteps, RayResolution, StartDate, TimestepSize, TimestepUnit,
-    WriteAoI, WriteZeroRes]
+    ResultExport]
   documentation:
   units: {}
   types: {StartDate: str, TimestepUnit: str}
+  slots: {ResultExport: Element_01}
+  synonyms: {}
+- !Template
+  template_name: SAShadingExportSetup
+  template_id: '7'
+  inherits_from:
+  content: [WriteAbsoluteIrradiation, WriteAngleOfIncidence, WriteIrradiatedAmountOfHeat,
+    WriteIrradiationVectors, WriteMeanShadingFactors, WriteShadingFactors, WriteSpecificIrradiation,
+    WriteSummary, WriteZeroRes]
+  documentation:
+  units: {}
+  types: {}
   slots: {}
   synonyms: {}
 - !Template
   template_name: SAViewFactorSetup
-  template_id: '7'
+  template_id: '8'
   inherits_from:
   content: [NRay, OnlyInsideZone, SampleDistance]
   documentation:

@@ -77,14 +77,19 @@ def get_dataframe_columns(tablename, engine):
 
 
 def write_face_results(df, name, writer, workbook, face_cls):
+
+    if isinstance(df.index, pd.DatetimeIndex):
+        if df.index.tz is not None:
+            df.index = df.index.tz_localize(None)
+
     df.to_excel(writer,
-                sheet_name='name',
+                sheet_name=name,
                 index=True,
                 startrow=1,
                 startcol=0
                 )
 
-    worksheet = workbook['name']
+    worksheet = workbook[name]
     for i, column in enumerate(df.columns):
         c1 = worksheet.cell(row=1, column=i + 2)
         face_component = face_cls.get_obj_by_id(int(column))

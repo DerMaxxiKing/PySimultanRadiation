@@ -18,7 +18,6 @@ class DBInterface(object):
     def __init__(self, *args, **kwargs):
 
         self.engine = kwargs.get('engine')
-
         self._object_table = None
 
     @property
