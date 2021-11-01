@@ -519,11 +519,10 @@ def cell_data_to_point_data(mesh):
     pass
 
 
-def angle(v1, v2, acute='False'):
-    # v1 first vector
-    # v2 second vector
-    angle = np.arccos(np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2)))
-    if (acute == True):
-        return angle
+def calc_aoi(irradiation_vector, face_normals, deg=True):
+    if deg:
+        return np.rad2deg(np.arccos(
+            np.clip(trimesh.util.diagonal_dot(face_normals, irradiation_vector['irradiation_vector']), -1.0, 1.0)))
     else:
-        return 2 * np.pi - angle
+        return np.arccos(
+            np.clip(trimesh.util.diagonal_dot(face_normals, irradiation_vector['irradiation_vector']), -1.0, 1.0))

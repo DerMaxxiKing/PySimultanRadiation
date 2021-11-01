@@ -58,7 +58,7 @@
   template_id: '6'
   inherits_from:
   content: [MeshSize, NumTimesteps, RayResolution, StartDate, TimestepSize, TimestepUnit,
-    WriteZeroRes]
+    WriteAoI, WriteZeroRes]
   documentation:
   units: {}
   types: {StartDate: str, TimestepUnit: str}

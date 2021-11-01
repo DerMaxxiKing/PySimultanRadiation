@@ -11,8 +11,10 @@ from sqlalchemy import Table, Column, MetaData, LargeBinary
 from sqlalchemy import create_engine
 from sqlalchemy.dialects import postgresql
 
+
 def df_interpolate_at(df, ts, method='linear', axis='index'):
     return df.reindex(df.index.union(ts)).sort_index().interpolate(method=method, axis=axis).loc[ts]
+
 
 def write_df_in_empty_table(df, tablename, engine, if_exists='append', index=True, dtype={}):
     """
@@ -72,3 +74,23 @@ def get_dataframe_columns(tablename, engine):
         result = conn.execute(sel).fetchone()
 
     return result.df_columns
+
+
+def write_face_results(df, name, writer, workbook, face_cls):
+    df.to_excel(writer,
+                sheet_name='name',
+                index=True,
+                startrow=1,
+                startcol=0
+                )
+
+    worksheet = workbook['name']
+    for i, column in enumerate(df.columns):
+        c1 = worksheet.cell(row=1, column=i + 2)
+        face_component = face_cls.get_obj_by_id(int(column))
+        if face_component is not None:
+            c1.value = face_component.name
+        else:
+            c1.value = ''
+
+    writer.save()

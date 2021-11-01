@@ -108,7 +108,6 @@ class DBInterface(object):
                                                                                                  type=str(type(df))).execute()
             elif if_exists == 'append':
                 logger.debug(f'Database: {name} exists. appending')
-                pass
 
         # with self.engine.connect() as conn:
         #     result = conn.execute(ins)

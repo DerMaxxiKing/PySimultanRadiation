@@ -1,16 +1,10 @@
 import copy
-import io
 import os
 import sys
-# import uuid
-# from guid import GUID
-# import socket
-# import numpy as np
 import time
 import traceback
 from multiprocessing import Pool, cpu_count
 from scipy import integrate
-# from tempfile import TemporaryFile, NamedTemporaryFile
 
 import meshio
 import numpy as np
@@ -23,12 +17,10 @@ from meshio import Mesh as MioMesh
 from pandas.io import sql
 from psycopg2.extensions import register_adapter, AsIs
 from psycopg2.extras import Json
-from sqlalchemy import Table, Column, MetaData, LargeBinary
+from sqlalchemy import Table, Column, MetaData
 from sqlalchemy import create_engine
 from sqlalchemy.dialects import postgresql
-# from sqlalchemy.dialects.postgresql import UUID
 from tqdm import tqdm, trange
-# import time
 from trimesh import Trimesh
 
 from . import TemplateParser, Template, yaml, DataModel
@@ -36,11 +28,13 @@ from . import logger
 from .client.client import Client, next_free_port
 from .docker.docker_manager import ShadingService, DatabaseService
 from .geometry.scene import Scene
+from .geometry.utils import calc_aoi
 from .gui.dialogs import askComboValue
 from .radiation.location import Location
 from .radiation.utils import create_sun_window
-from .utils import df_interpolate_at, write_df_in_empty_table
+from .utils import df_interpolate_at, write_face_results
 from .db_utils import DBInterface
+
 
 try:
     import importlib.resources as pkg_resources
@@ -56,7 +50,6 @@ with pkg_resources.path(resources, 'shading_analysis_template.yml') as r_path:
 psycopg2.extensions.register_adapter(np.float32, AsIs)
 psycopg2.extensions.register_adapter(np.ndarray, postgresql.ARRAY(sqlalchemy.types.FLOAT))
 register_adapter(dict, Json)
-
 
 
 def create_shading_template():
@@ -137,13 +130,27 @@ def create_shading_template():
                                          'StartDate',
                                          'TimestepSize',
                                          'TimestepUnit',
-                                         'WriteZeroRes'],
+                                         'ResultExport'],
                                 types={'StartDate': 'str',
-                                       'TimestepUnit': 'str'}
+                                       'TimestepUnit': 'str'},
+                                slots={'ResultExport': 'Element_01'},
                                 )
 
+    sa_shading_export_setup = Template(template_name='SAShadingExportSetup',
+                                       template_id='7',
+                                       content=['WriteAbsoluteIrradiation',
+                                                'WriteAngleOfIncidence',
+                                                'WriteIrradiatedAmountOfHeat',
+                                                'WriteIrradiationVectors',
+                                                'WriteMeanShadingFactors',
+                                                'WriteShadingFactors',
+                                                'WriteSpecificIrradiation',
+                                                'WriteSummary',
+                                                'WriteZeroRes']
+                                       )
+
     sa_view_factor_setup = Template(template_name='SAViewFactorSetup',
-                                    template_id='7',
+                                    template_id='8',
                                     content=['NRay',
                                              'OnlyInsideZone',
                                              'SampleDistance']
@@ -210,6 +217,7 @@ def create_shading_template():
                    sa_run_configuration,
                    sa_sim_setup,
                    sa_shading_setup,
+                   sa_shading_export_setup,
                    sa_view_factor_setup], f_obj)
 
 
@@ -591,6 +599,16 @@ class ShadingAnalysis(object):
             irradiation_vector = self.location.generate_irradiation_vector(self.dti)
             base_df['irradiation_vector'] = irradiation_vector['irradiation_vector']
 
+            # calculate angle of incidence
+            face_normals = np.array([x.normal for x in self.geo_model.faces])
+            face_ids = [x.id for x in self.geo_model.faces]
+            aois = irradiation_vector.apply(calc_aoi, args=(face_normals, ), axis=1, result_type='expand')
+            aois.columns = face_ids
+            try:
+                self.db_interface.save_dataframe(aois, 'angle of incidence')
+            except Exception as e:
+                logger.error(f"Error writing 'angle of incidence' to database:\n{e}\n{traceback.format_exc()}\n{sys.exc_info()[2]}")
+
             logger.info(f'Calculating sun windows')
             sun_window = create_sun_window(self.foi_mesh, np.stack(base_df['irradiation_vector'].values))
             base_df['windows'] = [x for x in sun_window]
@@ -600,13 +618,6 @@ class ShadingAnalysis(object):
 
             try:
                 self.db_interface.save_dataframe(base_df, 'base_df')
-
-                # write_df_in_empty_table(save_df,
-                #                         'base_df',
-                #                         engine,
-                #                         dtype={'irradiation_vector': postgresql.ARRAY(sqlalchemy.types.FLOAT),
-                #                                'windows': postgresql.ARRAY(sqlalchemy.types.FLOAT)},
-                #                         index=True)
             except Exception as e:
                 logger.error(f'Error writing base_df to database:\n{e}\n{traceback.format_exc()}\n{sys.exc_info()[2]}')
 
@@ -1115,8 +1126,6 @@ class ShadingAnalysis(object):
 
     def export_results(self):
 
-
-
         if not any([self.setup_component.run_configuration.WriteVTK, self.setup_component.run_configuration.WriteXLSX]):
             return
 
@@ -1228,8 +1237,12 @@ class ShadingAnalysis(object):
         #         logger.error(f'Error writing face_Q to database:\n{e}\n{traceback.format_exc()}\n{sys.exc_info()[2]}')
 
         face_f_sh = None
+        face_q_dot = None
+        face_q_tot_dot = None
+        face_Q = None
         base_df = None
         dni_req_ts = None
+        aois = None
 
         if bool(self.setup_component.run_configuration.WriteVTK):
 
@@ -1368,183 +1381,130 @@ class ShadingAnalysis(object):
             if not os.path.isdir(xlsx_path):
                 os.makedirs(xlsx_path, exist_ok=True)
 
+            result_export = self.setup_component.simulation_setup.ShadingSetup.ResultExport
+
             with self.db_service:
-                face_q_dot = self.db_interface.get_dataframe('face_q_dot')
-                face_Q_dot = self.db_interface.get_dataframe('face_q_tot_dot')
-                face_Q = self.db_interface.get_dataframe('face_Q')
 
-                if base_df is None:
-                    base_df = self.db_interface.get_dataframe('base_df')
-                if face_f_sh is None:
-                    face_f_sh = self.db_interface.get_dataframe('face_f_sh')
+                # if self.setup_component.simulation_setup.ShadingSetup.WriteAoI:
+                #     aois = self.db_interface.get_dataframe('angle of incidence')
 
-            with pd.ExcelWriter(os.path.join(xlsx_path, 'output.xlsx')) as writer:
+                with pd.ExcelWriter(os.path.join(xlsx_path, 'output.xlsx')) as writer:
 
-                workbook = writer.book
+                    workbook = writer.book
 
-                logger.info(f'Writing xlsx summary')
+                    if result_export.WriteSummary:
 
-                summary_df = pd.DataFrame(data={'Analysis ID': self.id.LocalId,
-                                                'Analysis Name': self.setup_component.name,
-                                                'North Angle': self.setup_component.location.NorthAngle,
-                                                'Weather File': os.path.basename(
-                                                    self.setup_component.location.Weather.weather_file_name),
-                                                'Mesh Size': self.setup_component.simulation_setup.ShadingSetup.MeshSize,
-                                                'Ray Resolution': self.setup_component.simulation_setup.ShadingSetup.RayResolution,
-                                                'Start Date': self.setup_component.simulation_setup.ShadingSetup.StartDate,
-                                                'Number of Timesteps': self.setup_component.simulation_setup.ShadingSetup.NumTimesteps,
-                                                'Timestep Size': self.setup_component.simulation_setup.ShadingSetup.TimestepSize,
-                                                'Timestep Unit': self.setup_component.simulation_setup.ShadingSetup.TimestepUnit,
-                                                'AddTerrain': self.setup_component.geometry.AddTerrain,
-                                                'Terrain Height': self.setup_component.geometry.TerrainHeight,
-                                                'Mesh': '',
-                                                'Num Triangles': self.mesh.cells[0].data.shape[0]
-                                                }, index=[0])
+                        logger.info(f'Writing xlsx summary')
 
-                summary_df.T.to_excel(writer,
-                                      sheet_name='Summary',
-                                      index=True,
-                                      header=True,
-                                      startrow=1,
-                                      startcol=1)
+                        summary_df = pd.DataFrame(data={'Analysis ID': self.id.LocalId,
+                                                        'Analysis Name': self.setup_component.name,
+                                                        'North Angle': self.setup_component.location.NorthAngle,
+                                                        'Weather File': os.path.basename(
+                                                            self.setup_component.location.Weather.weather_file_name),
+                                                        'Mesh Size': self.setup_component.simulation_setup.ShadingSetup.MeshSize,
+                                                        'Ray Resolution': self.setup_component.simulation_setup.ShadingSetup.RayResolution,
+                                                        'Start Date': self.setup_component.simulation_setup.ShadingSetup.StartDate,
+                                                        'Number of Timesteps': self.setup_component.simulation_setup.ShadingSetup.NumTimesteps,
+                                                        'Timestep Size': self.setup_component.simulation_setup.ShadingSetup.TimestepSize,
+                                                        'Timestep Unit': self.setup_component.simulation_setup.ShadingSetup.TimestepUnit,
+                                                        'AddTerrain': self.setup_component.geometry.AddTerrain,
+                                                        'Terrain Height': self.setup_component.geometry.TerrainHeight,
+                                                        'Mesh': '',
+                                                        'Num Triangles': self.mesh.cells[0].data.shape[0]
+                                                        }, index=[0])
 
-                writer.save()
+                        summary_df.T.to_excel(writer,
+                                              sheet_name='Summary',
+                                              index=True,
+                                              header=True,
+                                              startrow=1,
+                                              startcol=1)
 
-                # -------------------------------------------------------------------------------------------------
-                # write irradiation vectors
-                # -------------------------------------------------------------------------------------------------
-                logger.info(f'Writing xlsx irradiation vectors')
+                        writer.save()
 
-                irradiation_vectors_df = pd.DataFrame(data={'x': base_df['irradiation_vector'].apply(lambda x: x[0]),
-                                                            'y': base_df['irradiation_vector'].apply(lambda x: x[1]),
-                                                            'z': base_df['irradiation_vector'].apply(lambda x: x[2])})
+                    # write irradiation vectors
+                    if result_export.WriteIrradiationVectors:
+                        logger.info(f'Writing xlsx irradiation vectors')
+                        if base_df is None:
+                            base_df = self.db_interface.get_dataframe('base_df')
 
-                irradiation_vectors_df.index = irradiation_vectors_df.index.tz_localize(None)
-                irradiation_vectors_df.to_excel(writer,
-                                                sheet_name='Irradiation Vectors',
-                                                index=True,
-                                                startrow=0,
-                                                startcol=0)
+                        irradiation_vectors_df = pd.DataFrame(data={'x': base_df['irradiation_vector'].apply(lambda x: x[0]),
+                                                                    'y': base_df['irradiation_vector'].apply(lambda x: x[1]),
+                                                                    'z': base_df['irradiation_vector'].apply(lambda x: x[2])})
 
-                writer.save()
+                        irradiation_vectors_df.index = irradiation_vectors_df.index.tz_localize(None)
+                        irradiation_vectors_df.to_excel(writer,
+                                                        sheet_name='Irradiation Vectors',
+                                                        index=True,
+                                                        startrow=0,
+                                                        startcol=0)
 
-                # -------------------------------------------------------------------------------------------------
-                # write face_f_sh
-                # -------------------------------------------------------------------------------------------------
-                logger.info(f'Writing xlsx Shading Factors')
+                        writer.save()
 
-                face_f_sh.to_excel(writer,
-                                   sheet_name='Shading Factors',
-                                   index=True,
-                                   startrow=1,
-                                   startcol=0
-                                   )
+                    # angle of incidence
+                    if result_export.WriteAngleOfIncidence:
+                        logger.info(f'Writing xlsx AngleOfIncidence')
+                        if aois is None:
+                            aois = self.db_interface.get_dataframe('AngleOfIncidence')
+                        write_face_results(aois,
+                                           'AngleOfIncidence',
+                                           writer,
+                                           workbook,
+                                           self.geo_model.FaceCls)
 
-                worksheet = workbook['Shading Factors']
+                    # write face_f_sh
+                    if result_export.WriteShadingFactors:
+                        logger.info(f'Writing xlsx Shading Factors')
+                        if face_f_sh is None:
+                            face_f_sh = self.db_interface.get_dataframe('face_f_sh')
+                        write_face_results(face_f_sh,
+                                           'ShadingFactors',
+                                           writer,
+                                           workbook,
+                                           self.geo_model.FaceCls)
 
-                for i, column in enumerate(face_f_sh.columns):
-                    c1 = worksheet.cell(row=1, column=i + 2)
-                    face_component = self.geo_model.FaceCls.get_obj_by_id(int(column))
-                    if face_component is not None:
-                        c1.value = face_component.name
-                    else:
-                        c1.value = ''
+                    # write face_f_sh_mean
+                    if result_export.WriteMeanShadingFactors:
+                        logger.info(f'Writing xlsx MeanShadingFactors')
+                        write_face_results(face_f_sh.mean(axis=0),
+                                           'MeanShadingFactors',
+                                           writer,
+                                           workbook,
+                                           self.geo_model.FaceCls)
 
-                writer.save()
+                    # write face_solar_irradiation q_dot
+                    if result_export.WriteMeanShadingFactors:
 
-                # -------------------------------------------------------------------------------------------------
-                # write face_f_sh_mean
-                # -------------------------------------------------------------------------------------------------
-                logger.info(f'Writing xlsx Mean Shading Factors')
+                        logger.info(f'Writing xlsx Specific Irradiation')
+                        if face_q_dot is None:
+                            face_q_dot = self.db_interface.get_dataframe('face_q_dot')
+                        write_face_results(face_q_dot,
+                                           'SpecificIrradiation',
+                                           writer,
+                                           workbook,
+                                           self.geo_model.FaceCls)
 
-                face_f_sh.mean(axis=0).T.to_excel(writer,
-                                                  sheet_name='Mean Shading Factors',
-                                                  index=True,
-                                                  startrow=1,
-                                                  startcol=0
-                                                  )
-                worksheet = workbook['Mean Shading Factors']
+                    # write face_solar_irradiation Q_dot
+                    if result_export.WriteAbsoluteIrradiation:
+                        logger.info(f'Writing xlsx AbsoluteIrradiation')
+                        if face_q_tot_dot is None:
+                            face_q_tot_dot = self.db_interface.get_dataframe('face_q_tot_dot')
+                        write_face_results(face_q_tot_dot,
+                                           'AbsoluteIrradiation',
+                                           writer,
+                                           workbook,
+                                           self.geo_model.FaceCls)
 
-                for i, column in enumerate(face_f_sh.columns):
-                    c1 = worksheet.cell(row=1, column=i + 2)
-                    face_component = self.geo_model.FaceCls.get_obj_by_id(int(column))
-                    if face_component is not None:
-                        c1.value = face_component.name
-                    else:
-                        c1.value = ''
-
-                writer.save()
-
-                # -------------------------------------------------------------------------------------------------
-                # write face_solar_irradiation q_dot
-                # -------------------------------------------------------------------------------------------------
-                logger.info(f'Writing xlsx Specific Irradiation')
-                face_q_dot.to_excel(writer,
-                                    sheet_name='Specific Irradiation',
-                                    index=True,
-                                    startrow=1,
-                                    startcol=0
-                                    )
-
-                worksheet = workbook['Specific Irradiation']
-
-                for i, column in enumerate(face_q_dot.columns):
-                    c1 = worksheet.cell(row=1, column=i + 2)
-                    face_component = self.geo_model.FaceCls.get_obj_by_id(int(column))
-                    if face_component is not None:
-                        c1.value = face_component.name
-                    else:
-                        c1.value = ''
-
-                writer.save()
-
-                # -------------------------------------------------------------------------------------------------
-                # write face_solar_irradiation Q_dot
-                # -------------------------------------------------------------------------------------------------
-                logger.info(f'Writing xlsx Absolute irradiation')
-
-                face_Q_dot.to_excel(writer,
-                                    sheet_name='Absolute irradiation',
-                                    index=True,
-                                    startrow=1,
-                                    startcol=0
-                                    )
-
-                worksheet = workbook['Absolute irradiation']
-
-                for i, column in enumerate(face_Q_dot.columns):
-                    c1 = worksheet.cell(row=1, column=i + 2)
-                    face_component = self.geo_model.FaceCls.get_obj_by_id(int(column))
-                    if face_component is not None:
-                        c1.value = face_component.name
-                    else:
-                        c1.value = ''
-
-                writer.save()
-
-                # -------------------------------------------------------------------------------------------------
-                # write face_solar_irradiation Q
-                # -------------------------------------------------------------------------------------------------
-                logger.info(f'Writing xlsx Specific amount of heat')
-
-                face_Q.to_excel(writer,
-                                sheet_name='Specific amount of heat',
-                                index=True,
-                                startrow=1,
-                                startcol=0
-                                )
-
-                worksheet = workbook['Specific amount of heat']
-
-                for i, column in enumerate(face_Q.columns):
-                    c1 = worksheet.cell(row=1, column=i + 2)
-                    face_component = self.geo_model.FaceCls.get_obj_by_id(int(column))
-                    if face_component is not None:
-                        c1.value = face_component.name
-                    else:
-                        c1.value = ''
-
-                writer.save()
+                    # write face_solar_irradiation Q
+                    if result_export.WriteIrradiatedAmountOfHeat:
+                        logger.info(f'Writing xlsx IrradiatedAmountOfHeat')
+                        if face_Q is None:
+                            face_Q = self.db_interface.get_dataframe('face_Q')
+                        write_face_results(face_Q,
+                                           'IrradiatedAmountOfHeat',
+                                           writer,
+                                           workbook,
+                                           self.geo_model.FaceCls)
 
     def generate_hull_mesh(self):
 
@@ -1564,17 +1524,12 @@ class ShadingAnalysis(object):
                 f'postgresql://{self.user_name}:{self.password}@localhost:{self.db_service.port}/{str(self.id.GlobalId)}')
             engine.dispose()
 
-            # base_df = self.db_interface.get_dataframe('base_df')
-            # # f_sh = self.db_interface.get_dataframe('f_sh')
-            #
-            # # base_df = pd.read_sql_query(f"""select * from {'"'}{'base_df'}{'"'}""", con=engine, index_col='index').sort_values(
-            # #     by='index')
-            # #
             f_sh = pd.read_sql_query(f"""select * from {'"'}{'f_sh'}{'"'}""", con=engine, index_col='date').sort_values(
                 by='date')
 
             # ----------------------------------------------------------------------------------------------------------
             # create f_sh_for named faces:
+            # ----------------------------------------------------------------------------------------------------------
             logger.info(f'Aggregating results')
             face_f_sh = pd.DataFrame(f_sh.index.values, columns=['date'])
             face_f_sh.set_index('date', inplace=True)
@@ -1619,11 +1574,7 @@ class ShadingAnalysis(object):
             # write to database:
             try:
                 self.db_interface.save_dataframe(face_areas, 'face_areas')
-                # self.db_interface.get_dataframe('face_areas')
                 self.db_interface.save_dataframe(face_f_sh, 'face_f_sh')
-                # self.db_interface.get_dataframe('face_f_sh')
-                # write_df_in_empty_table(face_areas, 'face_areas', engine, index=False)
-                # write_df_in_empty_table(face_f_sh, 'face_f_sh', engine)
             except Exception as e:
                 logger.error(
                     f'Error writing face_areas, face_f_sh to database:\n{e}\n{traceback.format_exc()}\n{sys.exc_info()[2]}')
@@ -1632,7 +1583,6 @@ class ShadingAnalysis(object):
             face_q_dot = face_f_sh.multiply(dni_req_ts, axis=0)
             try:
                 self.db_interface.save_dataframe(face_q_dot, 'face_q_dot')
-                # write_df_in_empty_table(face_q_dot, 'face_q_dot', engine)
             except Exception as e:
                 logger.error(
                     f'Error writing face_q_dot to database:\n{e}\n{traceback.format_exc()}\n{sys.exc_info()[2]}')
@@ -1643,7 +1593,6 @@ class ShadingAnalysis(object):
                 face_Q_dot[column] = face_q_dot[column].multiply(face_areas[column][0], axis=0)
             try:
                 self.db_interface.save_dataframe(face_Q_dot, 'face_q_tot_dot')
-                # write_df_in_empty_table(face_Q_dot, 'face_q_tot_dot', engine)
             except Exception as e:
                 logger.error(
                     f'Error writing face_q_tot_dot to database:\n{e}\n{traceback.format_exc()}\n{sys.exc_info()[2]}')
@@ -1655,7 +1604,6 @@ class ShadingAnalysis(object):
                                   columns=face_Q_dot.columns)
             try:
                 self.db_interface.save_dataframe(face_Q, 'face_Q')
-                # write_df_in_empty_table(face_Q, 'face_Q', engine)
             except Exception as e:
                 logger.error(f'Error writing face_Q to database:\n{e}\n{traceback.format_exc()}\n{sys.exc_info()[2]}')
 
