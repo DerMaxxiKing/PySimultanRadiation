@@ -35,6 +35,15 @@ class WidgetLogger(logging.Handler):
 class MainWindow:
     def __init__(self):
         self.app = Tk()
+
+        def on_closing():
+            self.app.destroy()
+            sys.exit()
+
+        self.app.protocol("WM_DELETE_WINDOW", on_closing)
+
+        # self.app.protocol("WM_DELETE_WINDOW", self.app.iconify)
+        # self.app.bind('<Escape>', lambda e: self.app.destroy())
         self.app.title('PySimultanRadiation')
         self.app.geometry('650x650')
 

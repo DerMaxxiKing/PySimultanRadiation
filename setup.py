@@ -8,7 +8,7 @@ project_dir = Path(__file__).parent
 
 setuptools.setup(
     name="PySimultanRadiation",
-    version="0.0.12",
+    version="0.0.14",
     description="Package for SIMULTAN shading analyses",
     # Allow UTF-8 characters in README with encoding argument.
     long_description=project_dir.joinpath("README.rst").read_text(encoding="utf-8"),

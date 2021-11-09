@@ -35,6 +35,8 @@ from .radiation.utils import create_sun_window
 from .utils import df_interpolate_at, write_face_results
 from .db_utils import DBInterface
 
+from sqlalchemy.pool import QueuePool
+
 
 try:
     import importlib.resources as pkg_resources
@@ -275,8 +277,11 @@ class ProjectLoader(object):
                                                    setup_component=setup_component)
 
                 shading_analysis.db_service.keep_running = True
-                shading_analysis.write_mesh()
-                shading_analysis.run()
+                with shading_analysis.db_service:
+                    shading_analysis.write_mesh()
+                    shading_analysis.run()
+
+                shading_analysis.db_service.shut_down_db_service()
 
                 logger.info(f'Running Analysis {setup_component.name}, {setup_component.id} finished successfully')
                 print('\n\n')
@@ -448,11 +453,13 @@ class ShadingAnalysis(object):
                     self._mesh = mesh
                 else:
                     self._mesh = self.generate_mesh()
-                    self.write_mesh_to_db(self._mesh)
+                    with self.db_service:
+                        self.write_mesh_to_db(self._mesh)
             else:
                 self._mesh = self.generate_mesh()
                 if bool(self.setup_component.run_configuration.PersistDB):
-                    self.write_mesh_to_db(self._mesh)
+                    with self.db_service:
+                        self.write_mesh_to_db(self._mesh)
 
         return self._mesh
 
@@ -543,6 +550,9 @@ class ShadingAnalysis(object):
         return scene
 
     def generate_mesh(self, mesh_size=None):
+
+        self.update_fois()
+
         if mesh_size is None:
             mesh_size = self.shading_setup.MeshSize
 
@@ -558,7 +568,8 @@ class ShadingAnalysis(object):
             logger.info(f'Writing analyse {self.setup_component.name}, {self.setup_component.id} mesh to {self.setup_component.run_configuration.ExportDirectory}')
             if not os.path.isdir(self.setup_component.run_configuration.ExportDirectory):
                 os.makedirs(self.setup_component.run_configuration.ExportDirectory, exist_ok=True)
-            self.mesh.write(os.path.join(self.setup_component.run_configuration.ExportDirectory, f'{self.setup_component.name}_mesh.vtk'))
+            with self.db_service:
+                self.mesh.write(os.path.join(self.setup_component.run_configuration.ExportDirectory, f'{self.setup_component.name}_mesh.vtk'))
 
     def generate_foi_mesh(self):
         foi_mesh = trimesh.Trimesh(vertices=self.mesh.points,
@@ -575,7 +586,7 @@ class ShadingAnalysis(object):
                 face.foi = False
 
             for face in self.foi_faces:
-                face.foi = True
+                face.geo_instances[0].foi = True
 
     def run(self):
         self.db_service.keep_running = True
@@ -677,9 +688,12 @@ class ShadingAnalysis(object):
                     try:
                         logger.info('Creating multiprocessing pool...')
                         max_num_cpu = cpu_count()
-                        pool = Pool(min([int(self.setup_component.run_configuration.NumWorkers), max_num_cpu]))
+                        num_workers = min([int(self.setup_component.run_configuration.NumWorkers), max_num_cpu])
+                        pool = Pool()
+                        chunksize = calc_chunksize(num_workers, base_df.shape[0], factor=4)
+
                         # pool.map(rt_engine, list(df.iterrows()))
-                        for _ in tqdm(pool.imap_unordered(rt_engine, list(base_df.iterrows())),
+                        for _ in tqdm(pool.imap_unordered(rt_engine, list(base_df.iterrows()), chunksize=chunksize),
                                       total=base_df.shape[0],
                                       desc='Running ray casting for timesteps',
                                       colour='green'):
@@ -1329,6 +1343,9 @@ class ShadingAnalysis(object):
                                    total=f_sh.shape[0],
                                    colour='green',
                                    desc="Writing f_sh for faces"):
+                if key not in face_f_sh.columns:
+                    continue
+
                 values = np.array(face_f_sh[key])
 
                 cell_ids = self.mesh.cell_sets[key][1]
@@ -1566,11 +1583,14 @@ class ShadingAnalysis(object):
                                    total=len(self.mesh.cell_sets),
                                    colour='green',
                                    desc="Aggregating results for faces"):
-                f_areas = areas[value[1]]
-                f_areas_sum = sum(areas[value[1]])
-                face_areas[key] = f_areas_sum
+                if np.all(self.mesh.cell_data['foi'][0][value[1]]):
+                    f_areas = areas[value[1]]
+                    f_areas_sum = sum(areas[value[1]])
+                    face_areas[key] = f_areas_sum
 
-                face_f_sh[key] = np.sum(f_sh_mat[:, value[1]] * f_areas, axis=1) / f_areas_sum
+                    face_f_sh[key] = np.sum(f_sh_mat[:, value[1]] * f_areas, axis=1) / f_areas_sum
+                else:
+                    continue
 
             logger.info(f'Writing aggregated results to database')
             # write to database:
@@ -1615,7 +1635,7 @@ class RTEngine(object):
     def __init__(self, *args, **kwargs):
 
         self.client = None
-        self.db_engine = None
+        self.engine = kwargs.get('engine', None)
         # self.conn = None
 
         self.port = kwargs.get('port')
@@ -1636,9 +1656,11 @@ class RTEngine(object):
         date = args[0][0]
         df_row = args[0][1]
 
-        if self.db_engine is None:
+        if self.engine is None:
+
             self.engine = create_engine(
                 f'postgresql://{self.user_name}:{self.password}@localhost:{self.db_port}/{self.id}')
+            self.engine.dispose()
         if self.client is None:
             self.client = Client(ip=f'tcp://localhost:{self.port}')
 
@@ -1684,7 +1706,6 @@ class RTEngine(object):
         #                   'f_sh': postgresql.ARRAY(sqlalchemy.types.FLOAT)
         #                   }
         #            )
-
 
 
 def calc_timestep_async(port=None,
@@ -1733,3 +1754,14 @@ def calc_timestep_async(port=None,
 
     # end_time = time.time()
     # logger.info(f'processing needed: {end_time - start_time}')
+
+
+def calc_chunksize(n_workers, len_iterable, factor=4):
+    """Calculate chunksize argument for Pool-methods.
+
+    Resembles source-code within `multiprocessing.pool.Pool._map_async`.
+    """
+    chunksize, extra = divmod(len_iterable, n_workers * factor)
+    if extra:
+        chunksize += 1
+    return chunksize

@@ -334,11 +334,11 @@ def generate_terrain(hull_mesh, terrain_height, border_dist=150, mesh_size=50):
         # edges = [None] * (line.nodes.shape[0])
         # for i, node in enumerate(line.nodes):
         #    edges[i] = Edge(vertices=[points[node[0]], points[node[1]]])
-        edges = [None] * (more_simple_path.__len__())
+        edges = [None] * (more_simple_path.__len__()-1)
         for i in range(more_simple_path.__len__()-1):
             edges[i] = Edge(vertices=[points[more_simple_path[i]], points[more_simple_path[i+1]]])
 
-        edges[i+1] = Edge(vertices=[points[more_simple_path[-1]], points[more_simple_path[0]]])
+        # edges[i+1] = Edge(vertices=[points[more_simple_path[-1]], points[more_simple_path[0]]])
 
         all_edges.extend(edges)
         edge_loop = EdgeLoop(edges=edges, edge_orientations=[1] * edges.__len__())
@@ -526,3 +526,12 @@ def calc_aoi(irradiation_vector, face_normals, deg=True):
     else:
         return np.arccos(
             np.clip(trimesh.util.diagonal_dot(face_normals, irradiation_vector['irradiation_vector']), -1.0, 1.0))
+
+
+
+
+
+
+if __name__ == '__main__':
+
+    pass
